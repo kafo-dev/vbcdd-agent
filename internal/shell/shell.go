@@ -90,12 +90,6 @@ func (r Runner) Run(parent context.Context, command string) (Result, error) {
 	return Result{}, fmt.Errorf("shell: start %s: %w", r.Shell, runErr)
 }
 
-// SystemPrompt states the interpreter and the working directory, so the model
-// writes a command for the environment it meets.
-func (r Runner) SystemPrompt() string {
-	return fmt.Sprintf("Commands run through `%s -c` in `%s`.", r.Shell, r.Dir)
-}
-
 // limitedBuffer collects at most max bytes and notes the overflow.
 type limitedBuffer struct {
 	buf       bytes.Buffer

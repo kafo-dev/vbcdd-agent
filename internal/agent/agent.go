@@ -15,16 +15,17 @@ import (
 // shellToolName is the one tool the model may call.
 const shellToolName = "shell"
 
-// toolParameters describes the shell tool's arguments.
+// toolParameters describes the shell tool's arguments. The `%s` receives the
+// description, which names the interpreter and the working directory.
 const toolParameters = `{
   "type": "object",
   "properties": {
-    "command": {
+    "cmd": {
       "type": "string",
-      "description": "A command line for the system shell. Pipes, redirection, and globs work because the interpreter expands them."
+      "description": %s
     }
   },
-  "required": ["command"],
+  "required": ["cmd"],
   "additionalProperties": false
 }`
 
@@ -255,16 +256,16 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall) (string, error)
 		return "", fmt.Errorf("agent: unknown tool %q", call.Function.Name)
 	}
 	var args struct {
-		Command string `json:"command"`
+		Cmd string `json:"cmd"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return "", fmt.Errorf("agent: bad arguments for %s: %w", shellToolName, err)
 	}
-	if strings.TrimSpace(args.Command) == "" {
+	if strings.TrimSpace(args.Cmd) == "" {
 		return "", fmt.Errorf("agent: %s called without a command", shellToolName)
 	}
-	a.notice(args.Command)
-	res, err := a.Runner.Run(ctx, args.Command)
+	a.notice(args.Cmd)
+	res, err := a.Runner.Run(ctx, args.Cmd)
 	if err != nil {
 		return "", err
 	}
@@ -301,13 +302,27 @@ func render(res shell.Result) string {
 
 // tool advertises the shell tool.
 func (a *Agent) tool() llm.Tool {
-	description := "Run a command line through the system shell and return its combined output and exit code. " + a.Runner.SystemPrompt()
 	return llm.Tool{
 		Type: "function",
 		Function: llm.ToolFunction{
 			Name:        shellToolName,
-			Description: description,
-			Parameters:  json.RawMessage(toolParameters),
+			Description: "Run a command line through the system shell and return its combined output and exit code.",
+			Parameters:  a.parameters(),
 		},
 	}
+}
+
+// parameters renders the tool's argument schema, naming the interpreter and the
+// working directory so the model writes a command for the environment it meets.
+func (a *Agent) parameters() json.RawMessage {
+	description, err := json.Marshal(fmt.Sprintf(
+		"`cmd` is the string passed to `%s -c` in `%s`.",
+		a.Runner.Shell,
+		a.Runner.Dir,
+	))
+	if err != nil {
+		// Marshal of a string cannot fail; the schema stands without it.
+		description = []byte(`""`)
+	}
+	return json.RawMessage(fmt.Sprintf(toolParameters, description))
 }

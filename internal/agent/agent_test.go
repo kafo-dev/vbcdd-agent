@@ -38,7 +38,7 @@ func scripted(t *testing.T, command string) *httptest.Server {
 					Type: "function",
 					Function: llm.FunctionCall{
 						Name:      shellToolName,
-						Arguments: `{"command":` + strconv.Quote(command) + `}`,
+						Arguments: `{"cmd":` + strconv.Quote(command) + `}`,
 					},
 				}},
 			})
@@ -195,7 +195,7 @@ func TestAskSeparatesSections(t *testing.T) {
 				"type":  "function",
 				"function": map[string]any{
 					"name":      shellToolName,
-					"arguments": `{"command":"printf 'hi there'"}`,
+					"arguments": `{"cmd":"printf 'hi there'"}`,
 				},
 			}}})
 		} else {
@@ -239,7 +239,7 @@ func TestAskShowsCommandOutput(t *testing.T) {
 				"type":  "function",
 				"function": map[string]any{
 					"name":      shellToolName,
-					"arguments": `{"command":"printf hello; exit 3"}`,
+					"arguments": `{"cmd":"printf hello; exit 3"}`,
 				},
 			}}})
 		} else {
