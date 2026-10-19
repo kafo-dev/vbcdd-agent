@@ -26,10 +26,14 @@ const (
 
 // Message is one entry of the conversation.
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role    Role   `json:"role"`
+	Content string `json:"content"`
+	// ReasoningContent holds the chain of thought a reasoning model emitted
+	// before its answer. A request that carries tools must send it back, or
+	// the model loses the reasoning it already did.
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall is one function the model asked the program to run.
@@ -281,8 +285,11 @@ func (s *streamState) apply(chunk streamChunk) {
 		s.usage = *chunk.Usage
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.ReasoningContent != "" && s.stream.Thinking != nil {
-			s.stream.Thinking(choice.Delta.ReasoningContent)
+		if choice.Delta.ReasoningContent != "" {
+			s.message.ReasoningContent += choice.Delta.ReasoningContent
+			if s.stream.Thinking != nil {
+				s.stream.Thinking(choice.Delta.ReasoningContent)
+			}
 		}
 		if choice.Delta.Content != "" {
 			s.message.Content += choice.Delta.Content

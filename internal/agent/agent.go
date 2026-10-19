@@ -155,7 +155,7 @@ const charsPerToken = 4
 func estimateTokens(messages []llm.Message) int {
 	chars := 0
 	for _, message := range messages {
-		chars += len(message.Content)
+		chars += len(message.Content) + len(message.ReasoningContent)
 		for _, call := range message.ToolCalls {
 			chars += len(call.Function.Name) + len(call.Function.Arguments)
 		}

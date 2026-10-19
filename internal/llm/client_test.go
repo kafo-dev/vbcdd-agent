@@ -154,6 +154,9 @@ func TestCompleteStreamsReasoning(t *testing.T) {
 	if message.Content != "answer" {
 		t.Fatalf("content = %q, want %q", message.Content, "answer")
 	}
+	if message.ReasoningContent != "hmm" {
+		t.Fatalf("reasoning = %q, want %q", message.ReasoningContent, "hmm")
+	}
 }
 
 func TestCompleteSendsCustomHeaders(t *testing.T) {

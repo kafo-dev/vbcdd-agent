@@ -180,7 +180,11 @@ func TestAskRecordsReportedUsage(t *testing.T) {
 
 func TestEstimateTokens(t *testing.T) {
 	t.Parallel()
-	messages := []llm.Message{{Role: llm.RoleUser, Content: strings.Repeat("a", 8)}}
+	messages := []llm.Message{{
+		Role:             llm.RoleAssistant,
+		Content:          strings.Repeat("a", 4),
+		ReasoningContent: strings.Repeat("b", 4),
+	}}
 	if got := estimateTokens(messages); got != 2 {
 		t.Fatalf("estimateTokens = %d, want 2", got)
 	}

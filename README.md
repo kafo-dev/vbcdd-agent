@@ -80,7 +80,7 @@ max_output_bytes = 65536
 
 A header in `[headers]` overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
 
-A reasoning model streams its chain of thought before its answer. The program writes those fragments to standard error as they arrive, keeping standard output for the answer alone.
+A reasoning model streams its chain of thought before its answer. The program writes those fragments to standard error as they arrive, keeping standard output for the answer alone. It keeps that reasoning in the conversation and sends it back on later turns, as the protocol requires once tools are in play.
 
 Each environment variable overrides the file:
 
