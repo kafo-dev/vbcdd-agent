@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# Verify the repository's check and the debug-print rule; report and exit
+# non-zero. This hook never rewrites a file.
+
+set -u
+fail=0
+
+if [ -x scripts/check ]; then
+	scripts/check || fail=1
+else
+	echo 'pre-commit: scripts/check is missing or not executable' >&2
+	fail=1
+fi
+
+# A debug print left in the tree is a trap; the `!D: ` prefix makes it
+# greppable. `--cached` checks the index, the tree the commit will carry. The
+# pathspecs skip docs and this hook, which quote the prefix.
+out=$(git grep --cached -nI '!D: ' -- . ':!docs/**' ':!scripts/pre-commit')
+status=$?
+if [ "$status" -eq 0 ]; then
+	echo "pre-commit: remove debug prints (prefix '!D: '):" >&2
+	echo "$out" >&2
+	fail=1
+elif [ "$status" -gt 1 ]; then
+	echo "pre-commit: git grep failed with status $status" >&2
+	fail=1
+fi
+
+exit "$fail"

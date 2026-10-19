@@ -1,0 +1,35 @@
+#!/bin/sh
+
+# Go check: formatter verify, obsolete-API fixes, vet, static analysis, lint,
+# fast tests.
+
+set -u
+fail=0
+
+# `gofumpt -l` lists files that need formatting; exit 0 with output is a
+# failure.
+if ! out=$(go tool gofumpt -l . 2>&1); then
+	echo "check: gofumpt failed:" >&2
+	echo "$out" >&2
+	fail=1
+elif [ -n "$out" ]; then
+	echo "check: gofumpt would reformat:" >&2
+	echo "$out" >&2
+	fail=1
+fi
+
+# `go fix -diff` prints the patch and exits non-zero when a fix is pending.
+if ! out=$(go fix -diff ./... 2>&1); then
+	echo "check: go fix would rewrite:" >&2
+	echo "$out" >&2
+	fail=1
+fi
+
+go vet ./... || fail=1
+go tool staticcheck ./... || fail=1
+golangci-lint run || fail=1
+
+# `-short` keeps a commit fast; the full suite belongs in CI.
+go test -short -cover ./... || fail=1
+
+exit "$fail"

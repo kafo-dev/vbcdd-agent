@@ -1,0 +1,15 @@
+# Every value here is optional; the program supplies the defaults.
+# The file belongs at $XDG_CONFIG_HOME/vbcdd/agent/config.toml.
+
+# An endpoint speaking the OpenAI chat-completions protocol.
+base_url = "https://api.openai.com/v1"
+api_key = "sk-..."
+model = "gpt-4o-mini"
+
+# The standing instruction. `system_prompt_file` loads it from a file instead.
+system_prompt = "Answer in one paragraph."
+
+# Bounds on a single request.
+max_turns = 20
+shell_timeout_seconds = 60
+max_output_bytes = 65536

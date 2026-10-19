@@ -1,0 +1,188 @@
+// Package agent drives the tool loop between the model and the shell.
+package agent
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+
+	"vbcdd.kafo.dev/agent/internal/llm"
+	"vbcdd.kafo.dev/agent/internal/shell"
+)
+
+// defaultSystemPrompt holds the standing instruction shipped with the tool.
+//
+//go:embed prompt.md
+var defaultSystemPrompt string
+
+// DefaultSystemPrompt is that instruction, with the surrounding blank lines
+// removed.
+var DefaultSystemPrompt = strings.TrimSpace(defaultSystemPrompt)
+
+// shellToolName is the one tool the model may call.
+const shellToolName = "shell"
+
+// toolParameters describes the shell tool's arguments.
+const toolParameters = `{
+  "type": "object",
+  "properties": {
+    "command": {
+      "type": "string",
+      "description": "A command line for the system shell. Pipes, redirection, and globs work because the interpreter expands them."
+    }
+  },
+  "required": ["command"],
+  "additionalProperties": false
+}`
+
+// Agent holds one conversation and the loop that advances it.
+type Agent struct {
+	Client       *llm.Client
+	Runner       shell.Runner
+	SystemPrompt string
+	MaxTurns     int
+	Notices      io.Writer
+
+	history []llm.Message
+}
+
+// New starts a conversation with the system prompt in front.
+func New(client *llm.Client, runner shell.Runner, systemPrompt string, maxTurns int, notices io.Writer) *Agent {
+	if maxTurns <= 0 {
+		maxTurns = 1
+	}
+	system := strings.TrimSpace(systemPrompt)
+	if system == "" {
+		system = DefaultSystemPrompt
+	}
+	agent := &Agent{
+		Client:       client,
+		Runner:       runner,
+		SystemPrompt: system,
+		MaxTurns:     maxTurns,
+		Notices:      notices,
+	}
+	agent.history = []llm.Message{{Role: llm.RoleSystem, Content: system}}
+	return agent
+}
+
+// History returns the conversation with the system prompt removed, the form
+// the transcript stores.
+func (a *Agent) History() []llm.Message {
+	if len(a.history) == 0 {
+		return nil
+	}
+	out := make([]llm.Message, 0, len(a.history))
+	for _, message := range a.history {
+		if message.Role == llm.RoleSystem {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+// Restore seeds the conversation from a saved transcript, keeping the current
+// system prompt.
+func (a *Agent) Restore(messages []llm.Message) {
+	a.history = append([]llm.Message{{Role: llm.RoleSystem, Content: a.SystemPrompt}}, messages...)
+}
+
+// Ask appends input and runs the tool loop until the model answers without a
+// tool call. It returns the assistant's final text.
+func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", fmt.Errorf("agent: empty input")
+	}
+	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: input})
+	tools := []llm.Tool{a.tool()}
+
+	for range a.MaxTurns {
+		reply, err := a.Client.Complete(ctx, a.history, tools)
+		if err != nil {
+			return "", err
+		}
+		a.history = append(a.history, reply)
+		if len(reply.ToolCalls) == 0 {
+			return reply.Content, nil
+		}
+		a.runToolCalls(ctx, reply.ToolCalls)
+	}
+	return "", fmt.Errorf("agent: gave up after %d turns without a final answer", a.MaxTurns)
+}
+
+// runToolCalls executes each requested call and appends its result.
+func (a *Agent) runToolCalls(ctx context.Context, calls []llm.ToolCall) {
+	for _, call := range calls {
+		result, err := a.dispatch(ctx, call)
+		if err != nil {
+			result = err.Error()
+		}
+		a.history = append(a.history, llm.Message{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    result,
+		})
+	}
+}
+
+// dispatch runs one tool call and renders its result as text.
+func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall) (string, error) {
+	if call.Function.Name != shellToolName {
+		return "", fmt.Errorf("agent: unknown tool %q", call.Function.Name)
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		return "", fmt.Errorf("agent: bad arguments for %s: %w", shellToolName, err)
+	}
+	if strings.TrimSpace(args.Command) == "" {
+		return "", fmt.Errorf("agent: %s called without a command", shellToolName)
+	}
+	a.notice(args.Command)
+	res, err := a.Runner.Run(ctx, args.Command)
+	if err != nil {
+		return "", err
+	}
+	return render(res), nil
+}
+
+// notice reports a command before it runs.
+func (a *Agent) notice(command string) {
+	if a.Notices == nil {
+		return
+	}
+	fmt.Fprintf(a.Notices, "$ %s\n", command)
+}
+
+// render turns a result into the text the model reads next.
+func render(res shell.Result) string {
+	var sb strings.Builder
+	if strings.TrimSpace(res.Output) == "" {
+		sb.WriteString("(no output)")
+	} else {
+		sb.WriteString(res.Output)
+	}
+	if res.TimedOut {
+		sb.WriteString("\n[command timed out]")
+	}
+	fmt.Fprintf(&sb, "\n[exit code %d]", res.ExitCode)
+	return sb.String()
+}
+
+// tool advertises the shell tool.
+func (a *Agent) tool() llm.Tool {
+	description := "Run a command line through the system shell and return its combined output and exit code. " + a.Runner.SystemPrompt()
+	return llm.Tool{
+		Type: "function",
+		Function: llm.ToolFunction{
+			Name:        shellToolName,
+			Description: description,
+			Parameters:  json.RawMessage(toolParameters),
+		},
+	}
+}

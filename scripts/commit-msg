@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# Enforce `scope: description`; reject `feat:`/`fix:`/`chore:` prefixes.
+
+set -u
+
+subject=$(head -n 1 "$1")
+
+case $subject in
+"Merge "* | "Revert "* | "fixup! "* | "squash! "* | "Initial commit"*) exit 0 ;;
+esac
+
+# Match the type prefix first: its subject also fails the general pattern below,
+# and the scoped-commit pointer belongs in that error.
+if printf '%s\n' "$subject" | grep -Eq '^(feat|fix|chore)(\(|!?:)'; then
+	echo "commit-msg: use '<scope>: <description>' (https://scopedcommits.com)" >&2
+	echo "    got: $subject" >&2
+	exit 1
+fi
+
+if ! printf '%s\n' "$subject" | grep -Eq '^[a-z][a-z0-9._/,-]*[a-z0-9]( \([A-Z0-9-]+\))?: [^[:space:]]'; then
+	echo "commit-msg: subject must read '<scope>: <description>'" >&2
+	echo "    got: $subject" >&2
+	exit 1
+fi

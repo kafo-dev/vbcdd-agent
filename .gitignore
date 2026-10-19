@@ -1,0 +1,5 @@
+# Build output.
+/vbcdd-agent
+
+# `vale` styles, fetched by `vale sync`
+styles/

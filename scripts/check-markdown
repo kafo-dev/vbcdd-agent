@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# Markdown check: the `rumdl` lint and formatter verify, then the `vale` and
+# `harper-cli` prose lints.
+
+# `rumdl` replaces `prettier` for Markdown. `.rumdl.toml` keeps the default
+# rule set and turns the length limit off, so its MD013 reflow joins a wrapped
+# paragraph onto one line. `check` reports every rule; `fmt --check` covers the
+# fixable formatting `prettier` held. The prose lints cover the rest.
+
+# `skip_path` names the Markdown files this check leaves alone. It takes git
+# pathspec syntax, so a directory (`prompt`) or a glob (`prompt/*.md`) works.
+# Point it at text that instructs a model, or that quotes the patterns it
+# catalogs: `vale` and `harper-cli` read that text as the author's own prose,
+# and `rumdl` reads it as a document for a person.
+
+set -u
+fail=0
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+skip_path='internal/agent/prompt.md'
+ignore='SplitWords,MassNouns,ItsContraction,ThatThan,MissingTo,WrongNegative'
+ignore="$ignore,DisjointPrefixes,CompoundNouns,ExpandConfiguration,ExpandStandardInputAndOutput"
+ignore="$ignore,SpellCheck"
+# A heading may carry a name in its own capitalization, as in a project title;
+# the rest of `Capitalization` stays on.
+ignore="$ignore,UseTitleCase"
+# Unit symbols (`KiB`, `MB`) stay as written; the rule wants them spelled out.
+ignore="$ignore,ExpandMemoryShorthands"
+
+md_paths() {
+	if [ -n "$skip_path" ]; then
+		git ls-files '*.md' ":(exclude)$skip_path"
+	else
+		git ls-files '*.md'
+	fi
+}
+
+md_files() {
+	md_paths | tr '\n' '\0'
+}
+
+if [ -n "$(md_paths)" ]; then
+	md_files | xargs -0 rumdl check || fail=1
+	md_files | xargs -0 rumdl fmt --check || fail=1
+	md_files | xargs -0 vale --no-color --no-global || fail=1
+	md_files | xargs -0 harper-cli --no-color lint --quiet \
+		--ignore "$ignore" || fail=1
+fi
+
+exit "$fail"

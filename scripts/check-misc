@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Misc check: formatter verify for JSON, YAML, and TOML.
+
+set -u
+fail=0
+
+# `prettier` covers JSON and YAML; `taplo` covers TOML.
+if [ -n "$(git ls-files '*.json' '*.yaml' '*.yml')" ]; then
+	git ls-files -z '*.json' '*.yaml' '*.yml' | xargs -0 prettier --check || fail=1
+fi
+if [ -n "$(git ls-files '*.toml')" ]; then
+	git ls-files -z '*.toml' | xargs -0 taplo fmt --check || fail=1
+fi
+
+exit "$fail"

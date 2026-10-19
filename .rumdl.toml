@@ -1,0 +1,8 @@
+# `rumdl` is the Markdown linter and formatter; `prettier` no longer runs on
+# `.md`. Every rule stays on except the line-length limit: `line-length = 0`
+# lifts it, so `reflow-mode = "normalize"` joins a wrapped paragraph onto a
+# single line instead of wrapping one.
+[MD013]
+line-length = 0
+reflow = true
+reflow-mode = "normalize"

@@ -1,0 +1,376 @@
+version: "2"
+
+run:
+  # A hung analyzer fails loudly instead of stalling a tool call.
+  timeout: 5m
+  # Report paths relative to the module root, not to this file's directory, so
+  # the output stays stable wherever the config lives.
+  relative-path-mode: gomod
+
+issues:
+  max-issues-per-linter: 0
+  # With errcheck.check-blank on, several linters share a line
+  # (`resp, _ := http.Get(url)` draws errcheck, gosec and noctx), and the
+  # default hides all but one per run.
+  uniq-by-line: false
+  max-same-issues: 0
+
+formatters:
+  enable:
+    # Stricter than gofmt and backwards compatible; agent output drifts from
+    # gofmt's neighbourhood.
+    - gofumpt
+    - goimports
+    - golines
+
+  settings:
+    goimports:
+      # Left empty on purpose: this config applies to every module below it, so
+      # any prefix here would misgroup imports everywhere but one project.
+      local-prefixes: []
+
+    golines:
+      max-len: 120
+
+linters:
+  default: standard
+  # Two linters from the upstream set stay off, because each one contradicts a
+  # deliberate pattern rather than reporting a defect:
+  #   * gochecknoglobals flags `//go:embed` vars and immutable lookup tables;
+  #   * testpackage forces external test packages, which cannot reach the
+  #     unexported symbols a test in the same package exercises.
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - clickhouselint
+    - containedctx # A context stored in a struct field: a favourite agent shortcut.
+    - copyloopvar
+    - cyclop
+    - depguard
+    - dupl
+    - dupword # Catches "the the" in doc comments, which agent prose produces in bulk.
+    - durationcheck
+    - embeddedstructfieldcheck
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - funcorder
+    - funlen
+    - gocheckcompilerdirectives
+    - gochecknoinits
+    - gochecksumtype
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godoclint
+    - godot
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - govet
+    - iface
+    - ineffassign
+    - intrange
+    - iotamixing
+    - loggercheck
+    - makezero
+    - mirror
+    - misspell # Typos in comments and string literals; auto-fixable, so the loop stays short.
+    - mnd
+    - modernize
+    - musttag
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    # Every test runs in parallel unless it calls t.Setenv itself, which the
+    # linter reads as the exemption. A helper that calls t.Setenv therefore
+    # hides the exemption, and the test it serves panics on t.Parallel.
+    - paralleltest
+    - perfsprint
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - testableexamples
+    - testifylint
+    - thelper # Test helpers must call t.Helper(); agents write helpers without it.
+    - tparallel
+    - unconvert
+    - unparam
+    - unqueryvet
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+
+    ## you may want to enable
+    #- arangolint # opinionated best practices for arangodb client
+    #- decorder # checks declaration order and count of types, constants, variables and functions
+    #- exhaustruct_v5 # [recommended for agent code] checks if all structure fields are initialized
+    #- ginkgolinter # [if you use ginkgo/gomega] enforces standards of using ginkgo and gomega
+    #- godox # detects usage of FIXME, TODO and other keywords inside comments
+    #- goheader # checks is file header matches to pattern
+    #- inamedparam # [great idea, but too strict, need to ignore a lot of cases by default] reports interfaces with unnamed method parameters
+    #- interfacebloat # checks the number of methods inside an interface
+    #- ireturn # accept interfaces, return concrete types
+    #- noinlineerr # disallows inline error handling `if err := ...; err != nil {`
+    #- prealloc # [premature optimization, but can be used in some cases] finds slice declarations that could potentially be preallocated
+    #- tagalign # checks that struct tags are well aligned
+    #- varnamelen # [great idea, but too many false positives] checks that the length of a variable's name matches its scope
+    #- wrapcheck # checks that errors returned from external packages are wrapped
+    #- zerologlint # detects the wrong usage of zerolog that a user forgets to dispatch zerolog.Event
+
+    ## disabled
+    #- contextcheck # [too many false positives] checks the function whether use a non-inherited context
+    #- dogsled # checks assignments with too many blank identifiers (e.g. x, _, _, _, := f())
+    #- err113 # [too strict] checks the errors handling expressions
+    #- errchkjson # [don't see profit + I'm against of omitting errors like in the first example https://github.com/breml/errchkjson] checks types passed to the json encoding functions. Reports unsupported types and optionally reports occasions, where the check for the returned error can be omitted
+    #- forcetypeassert # [replaced by errcheck] finds forced type assertions
+    #- gomodguard_v2: [use more powerful depguard] allow and blocklist linter for direct Go module dependencies
+    #- gosmopolitan # reports certain i18n/l10n anti-patterns in your Go codebase
+    #- grouper # analyzes expression groups
+    #- importas # enforces consistent import aliases
+    #- lll # [replaced by golines] reports long lines
+    #- maintidx # measures the maintainability index of each function
+    #- nlreturn # [too strict and mostly code is not more readable] checks for a new line before return and branch statements to increase code clarity
+    #- tagliatelle # checks the struct tags
+    #- wsl_v5 # [too strict and mostly code is not more readable] add or remove empty lines
+
+  settings:
+    cyclop:
+      max-complexity: 30
+      package-average: 10.0
+
+    depguard:
+      rules:
+        "deprecated":
+          files:
+            - "$all"
+          deny:
+            - pkg: github.com/golang/protobuf
+              desc: Use google.golang.org/protobuf instead, see https://developers.google.com/protocol-buffers/docs/reference/go/faq#modules
+            - pkg: github.com/satori/go.uuid
+              desc: Use github.com/google/uuid instead, satori's package is not maintained
+            - pkg: github.com/gofrs/uuid$
+              desc: Use github.com/gofrs/uuid/v5 or later, it was not a go module before v5
+            - pkg: github.com/pkg/errors
+              desc: Use the standard errors package with fmt.Errorf("%w", err)
+            - pkg: io/ioutil
+              desc: Deprecated since Go 1.16; use io and os
+            - pkg: gopkg.in/yaml.v2
+              desc: Use gopkg.in/yaml.v3
+            - pkg: github.com/mitchellh/go-homedir
+              desc: Use os.UserHomeDir
+            - pkg: github.com/dgrijalva/jwt-go
+              desc: Archived after CVE-2020-26160; use github.com/golang-jwt/jwt/v5
+            - pkg: github.com/ghodss/yaml
+              desc: Unmaintained; use sigs.k8s.io/yaml
+        "non-test files":
+          files:
+            - "!$test"
+          deny:
+            - pkg: math/rand$
+              desc: Use math/rand/v2 instead, see https://go.dev/blog/randv2
+        "non-main files":
+          files:
+            - "!**/main.go"
+          deny:
+            - pkg: log$
+              desc: Use log/slog instead, see https://go.dev/blog/slog
+
+    dupword:
+      # Raw-string bodies carry SQL, regexps and prose where a repeat can be intentional.
+      skip-raw-strings: true
+
+    embeddedstructfieldcheck:
+      forbid-mutex: true
+
+    errcheck:
+      check-type-assertions: true
+      # An error return discarded with the blank identifier (`resp, _ := http.Get(url)`)
+      # is the single most common agent error-handling defect, and the default
+      # (`false`) lets every one of them through. Justify the rare intentional
+      # blank with `//nolint:errcheck // reason`.
+      check-blank: true
+
+    exhaustive:
+      check:
+        - switch
+        - map
+
+    # `exhaustruct` is deprecated in v2.13+; the live linter reads `exhaustruct_v5`.
+    # These settings did nothing under the old key, so this block stayed dead.
+    # To use it on agent-written code without drowning in noise, add the linter to
+    # the `enable` list with `explicit-mode: true` and list the types that matter
+    # in `enforce-patterns`; the check then runs only on those.
+    exhaustruct_v5:
+      # The `exclude` key from v4 no longer exists in v5, so this list did nothing
+      # under the old spelling.
+      ignore-patterns:
+        # std libs
+        - ^net/http.Client$
+        - ^net/http.Cookie$
+        - ^net/http.Request$
+        - ^net/http.Response$
+        - ^net/http.Server$
+        - ^net/http.Transport$
+        - ^net/url.URL$
+        - ^os/exec.Cmd$
+        - ^reflect.StructField$
+        # public libs
+        - ^github.com/Shopify/sarama.Config$
+        - ^github.com/Shopify/sarama.ProducerMessage$
+        - ^github.com/mitchellh/mapstructure.DecoderConfig$
+        - ^github.com/prometheus/client_golang/.+Opts$
+        - ^github.com/spf13/cobra.Command$
+        - ^github.com/spf13/cobra.CompletionOptions$
+        - ^github.com/stretchr/testify/mock.Mock$
+        - ^github.com/testcontainers/testcontainers-go.+Request$
+        - ^github.com/testcontainers/testcontainers-go.FromDockerfile$
+        - ^golang.org/x/tools/go/analysis.Analyzer$
+        - ^google.golang.org/protobuf/.+Options$
+        - ^gopkg.in/yaml.v3.Node$
+      allow-empty-returns: true
+
+    funcorder:
+      struct-method: false
+
+    funlen:
+      lines: 100
+      statements: 50
+
+    gochecksumtype:
+      default-signifies-exhaustive: false
+
+    gocognit:
+      min-complexity: 20
+
+    gocritic:
+      settings:
+        captLocal:
+          paramsOnly: false
+        underef:
+          skipRecvDeref: false
+
+    godoclint:
+      enable:
+        - no-unused-link
+        - require-stdlib-doclink
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # too strict
+      settings:
+        shadow:
+          strict: true
+
+    inamedparam:
+      skip-single-param: true
+
+    mnd:
+      ignored-functions:
+        - args.Error
+        - flag.Arg
+        - flag.Duration.*
+        - flag.Float.*
+        - flag.Int.*
+        - flag.Uint.*
+        - os.Chmod
+        - os.Mkdir.*
+        - os.OpenFile
+        - os.WriteFile
+        - prometheus.ExponentialBuckets.*
+        - prometheus.LinearBuckets
+
+    misspell:
+      # Fix the locale so results do not shift with the host's language settings.
+      locale: US
+
+    nakedret:
+      max-func-lines: 0
+
+    nolintlint:
+      # A directive that suppresses nothing, e.g. one an agent pasted over code
+      # that no longer trips the rule.
+      allow-unused: false
+      # Keep the escape hatch expensive. `funlen`, `gocognit` and `golines` were
+      # exempt, which let an agent silence the three linters it hits hardest with
+      # a bare `//nolint`. Name the linter and give a reason, or fix the code.
+      allow-no-explanation: []
+      require-explanation: true
+      require-specific: true
+
+    perfsprint:
+      strconcat: false
+      error-format: false # https://github.com/catenacyber/perfsprint/issues/62
+
+    reassign:
+      patterns:
+        - ".*"
+
+    rowserrcheck:
+      packages:
+        - github.com/jmoiron/sqlx
+
+    sloglint:
+      no-global: all
+      context: scope
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1016
+        - -QF1008
+
+    usetesting:
+      os-temp-dir: true
+
+  exclusions:
+    warn-unused: true
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - source: "TODO"
+        linters: [godot]
+      - text: "should have a package comment"
+        linters: [revive]
+      - text: 'exported \S+ \S+ should have comment( \(or a comment on this block\))? or be unexported'
+        linters: [revive]
+      - text: 'package comment should be of the form ".+"'
+        source: "// ?(nolint|TODO)"
+        linters: [revive]
+      - path: '_test\.go'
+        linters:
+          - bodyclose
+          - dupl
+          - errcheck
+          - funlen
+          - goconst
+          - gosec
+          - noctx
+          - wrapcheck

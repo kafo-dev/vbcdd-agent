@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# Check driver: run every `scripts/check-*` in turn.
+
+set -u
+fail=0
+
+for check in scripts/check-*; do
+	[ -x "$check" ] || continue
+	"$check" || fail=1
+done
+
+exit "$fail"

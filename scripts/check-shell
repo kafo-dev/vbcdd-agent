@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# POSIX Shell check: formatter verify and `shellcheck`.
+
+# `extra_paths` names the tracked shell files this check would otherwise miss,
+# because nothing marks them as shell: a deployed helper that carries a `sh`
+# shebang but no `.sh` extension, for instance. `skip_path` names the tracked
+# files the check leaves alone, because another language owns them, such as a
+# generator under `scripts/`. Both take git pathspec syntax, and a space
+# separates two pathspecs.
+
+# `shfmt` enforces the dialect: a Bash-only construct fails to parse under
+# `-ln=posix`, and `shellcheck` reports the rest.
+
+set -u
+fail=0
+
+extra_paths=''
+skip_path=''
+
+sh_paths() {
+	# shellcheck disable=SC2086 # the pathspecs must split into arguments.
+	set -- '*.sh' 'scripts/*' $extra_paths
+	if [ -n "$skip_path" ]; then
+		git ls-files "$@" ":(exclude)$skip_path"
+	else
+		git ls-files "$@"
+	fi
+}
+
+shfmt -ln=posix -d . || fail=1
+
+if [ -n "$(sh_paths)" ]; then
+	sh_paths | tr '\n' '\0' | xargs -0 shellcheck -s sh || fail=1
+fi
+
+exit "$fail"
