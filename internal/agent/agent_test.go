@@ -94,7 +94,7 @@ func TestAskRunsShellTool(t *testing.T) {
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
 	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	var streamed bytes.Buffer
-	ag := New(client, runner, "be brief", 5, &streamed, nil)
+	ag := New(client, runner, "be brief", 5, &streamed, nil, nil)
 
 	reply, err := ag.Ask(context.Background(), "say hi")
 	if err != nil {
@@ -120,7 +120,7 @@ func TestAskRunsShellTool(t *testing.T) {
 
 func TestHistoryDropsSystemPrompt(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "keep quiet", 3, nil, nil)
+	ag := New(nil, shell.Runner{}, "keep quiet", 3, nil, nil, nil)
 	if got := ag.History(); len(got) != 0 {
 		t.Fatalf("History = %d messages, want 0", len(got))
 	}
@@ -138,6 +138,13 @@ func TestAskRecordsReportedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		reasoning, err := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"reasoning_content": "hmm"}}},
+		})
+		if err != nil {
+			t.Errorf("encode reasoning: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", reasoning)
 		content, err := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{"delta": map[string]any{"content": "hi"}}},
 		})
@@ -158,12 +165,16 @@ func TestAskRecordsReportedUsage(t *testing.T) {
 	defer server.Close()
 
 	client := llm.New(server.URL, "key", "model", nil, server.Client())
-	ag := New(client, shell.Runner{}, "", 3, io.Discard, nil)
+	var thinking bytes.Buffer
+	ag := New(client, shell.Runner{}, "", 3, io.Discard, &thinking, nil)
 	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
 	if got := ag.Tokens(); got != 105 {
 		t.Fatalf("Tokens = %d, want 105", got)
+	}
+	if got := thinking.String(); got != "hmm" {
+		t.Fatalf("thinking = %q, want %q", got, "hmm")
 	}
 }
 
@@ -177,7 +188,7 @@ func TestEstimateTokens(t *testing.T) {
 
 func TestNewOmitsEmptySystemPrompt(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "   ", 3, nil, nil)
+	ag := New(nil, shell.Runner{}, "   ", 3, nil, nil, nil)
 	if len(ag.history) != 0 {
 		t.Fatalf("history = %d messages, want none", len(ag.history))
 	}
@@ -189,7 +200,7 @@ func TestNewOmitsEmptySystemPrompt(t *testing.T) {
 
 func TestAskRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "", 3, nil, nil)
+	ag := New(nil, shell.Runner{}, "", 3, nil, nil, nil)
 	if _, err := ag.Ask(context.Background(), "   "); err == nil {
 		t.Fatal("Ask accepted empty input")
 	}

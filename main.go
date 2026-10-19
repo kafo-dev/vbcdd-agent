@@ -97,6 +97,7 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 	}
 	runner := shell.New("", dir, time.Duration(cfg.ShellTimeoutSeconds)*time.Second, cfg.MaxOutputBytes)
 	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Headers, nil)
+	client.ReasoningEffort = cfg.ReasoningEffort
 
 	writer, resumed, err := openTranscript(store, opts)
 	if err != nil {
@@ -108,7 +109,7 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 		}
 	}()
 
-	ag := agent.New(client, runner, cfg.SystemPrompt, cfg.MaxTurns, os.Stdout, os.Stderr)
+	ag := agent.New(client, runner, cfg.SystemPrompt, cfg.MaxTurns, os.Stdout, os.Stderr, os.Stderr)
 	if resumed != nil {
 		ag.Restore(resumed)
 	}

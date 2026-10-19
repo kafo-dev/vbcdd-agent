@@ -63,6 +63,7 @@ type Config struct {
 	APIKey              string            `toml:"api_key"`
 	APIKeyCommand       string            `toml:"api_key_command"`
 	Model               string            `toml:"model"`
+	ReasoningEffort     string            `toml:"reasoning_effort"`
 	SystemPrompt        string            `toml:"system_prompt"`
 	SystemPromptFile    string            `toml:"system_prompt_file"`
 	Headers             map[string]string `toml:"headers"`

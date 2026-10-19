@@ -6,6 +6,11 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-..."
 model = "gpt-4o-mini"
 
+# How much the model may spend on reasoning before it answers: `low`, `high`,
+# or `max`, as the endpoint defines them. An empty value leaves the choice to
+# the endpoint. The reasoning streams to standard error as it arrives.
+reasoning_effort = "low"
+
 # A command that prints the key. It runs through `$SHELL -c` on every start and
 # wins over `api_key`, which suits a secret manager.
 api_key_command = "op read op://Private/OpenAI/credential"

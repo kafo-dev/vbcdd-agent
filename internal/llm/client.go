@@ -75,11 +75,12 @@ func (u Usage) Total() int {
 }
 
 type chatRequest struct {
-	Model         string         `json:"model"`
-	Messages      []Message      `json:"messages"`
-	Tools         []Tool         `json:"tools,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Model           string         `json:"model"`
+	Messages        []Message      `json:"messages"`
+	Tools           []Tool         `json:"tools,omitempty"`
+	Stream          bool           `json:"stream,omitempty"`
+	StreamOptions   *streamOptions `json:"stream_options,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 }
 
 // streamOptions asks the endpoint to report token usage in the final event.
@@ -108,6 +109,10 @@ type Client struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// ReasoningEffort asks the endpoint to spend that much on reasoning, as
+	// `low`, `high`, or `max`. An empty value leaves the choice to the
+	// endpoint.
+	ReasoningEffort string
 	// Headers carries extra request headers, such as a provider's
 	// authentication scheme. A custom header wins over the default the
 	// client would set.
@@ -130,10 +135,13 @@ func New(baseURL, apiKey, model string, headers map[string]string, httpClient *h
 	}
 }
 
-// streamDelta is one incremental piece of the assistant's reply.
+// streamDelta is one incremental piece of the assistant's reply. A reasoning
+// model streams its chain of thought through ReasoningContent before it
+// streams the answer through Content.
 type streamDelta struct {
-	Content   string                   `json:"content"`
-	ToolCalls []streamToolCallFragment `json:"tool_calls"`
+	Content          string                   `json:"content"`
+	ReasoningContent string                   `json:"reasoning_content"`
+	ToolCalls        []streamToolCallFragment `json:"tool_calls"`
 }
 
 // streamToolCallFragment is one fragment of a tool call. The protocol splits a
@@ -159,15 +167,23 @@ type streamChunk struct {
 	Error *apiError `json:"error,omitempty"`
 }
 
+// Stream carries the callbacks that receive a reply as it arrives. A nil
+// callback drops its fragments.
+type Stream struct {
+	// Text receives the answer's content fragments.
+	Text func(string)
+	// Thinking receives the reasoning fragments that precede the answer.
+	Thinking func(string)
+}
+
 // Complete sends the conversation and returns the assistant's reply and the
-// tokens it consumed. It streams the reply, calling onText with each content
-// fragment as it arrives. A nil onText discards the fragments but still
-// assembles the message.
+// tokens it consumed. It streams the reply, calling the stream callbacks with
+// each fragment as it arrives.
 func (c *Client) Complete(
 	ctx context.Context,
 	messages []Message,
 	tools []Tool,
-	onText func(string),
+	stream Stream,
 ) (Message, Usage, error) {
 	if c.BaseURL == "" {
 		return Message{}, Usage{}, fmt.Errorf("llm: base url is empty")
@@ -179,11 +195,12 @@ func (c *Client) Complete(
 		return Message{}, Usage{}, fmt.Errorf("llm: no messages to send")
 	}
 	request := chatRequest{
-		Model:         c.Model,
-		Messages:      messages,
-		Tools:         tools,
-		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: true},
+		Model:           c.Model,
+		Messages:        messages,
+		Tools:           tools,
+		Stream:          true,
+		StreamOptions:   &streamOptions{IncludeUsage: true},
+		ReasoningEffort: c.ReasoningEffort,
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -217,13 +234,13 @@ func (c *Client) Complete(
 		}
 		return Message{}, Usage{}, fmt.Errorf("llm: %s: %s", resp.Status, truncate(string(raw), maxErrorBody))
 	}
-	return readStream(resp.Body, onText)
+	return readStream(resp.Body, stream)
 }
 
 // readStream parses the server-sent events into one assistant message and the
 // tokens the request reported.
-func readStream(body io.Reader, onText func(string)) (Message, Usage, error) {
-	state := streamState{message: Message{Role: RoleAssistant}, onText: onText}
+func readStream(body io.Reader, stream Stream) (Message, Usage, error) {
+	state := streamState{message: Message{Role: RoleAssistant}, stream: stream}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, scannerInit), scannerMax)
 	for scanner.Scan() {
@@ -255,19 +272,22 @@ type streamState struct {
 	message Message
 	calls   []ToolCall
 	usage   Usage
-	onText  func(string)
+	stream  Stream
 }
 
-// apply folds one event into the reply, reporting new text to the callback.
+// apply folds one event into the reply, reporting new text to the callbacks.
 func (s *streamState) apply(chunk streamChunk) {
 	if chunk.Usage != nil {
 		s.usage = *chunk.Usage
 	}
 	for _, choice := range chunk.Choices {
+		if choice.Delta.ReasoningContent != "" && s.stream.Thinking != nil {
+			s.stream.Thinking(choice.Delta.ReasoningContent)
+		}
 		if choice.Delta.Content != "" {
 			s.message.Content += choice.Delta.Content
-			if s.onText != nil {
-				s.onText(choice.Delta.Content)
+			if s.stream.Text != nil {
+				s.stream.Text(choice.Delta.Content)
 			}
 		}
 		for _, fragment := range choice.Delta.ToolCalls {

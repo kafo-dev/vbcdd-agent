@@ -35,8 +35,11 @@ type Agent struct {
 	SystemPrompt string
 	MaxTurns     int
 	// Out receives the assistant's text as the model streams it.
-	Out     io.Writer
-	Notices io.Writer
+	Out io.Writer
+	// Thinking receives the model's reasoning as it streams it, before the
+	// answer.
+	Thinking io.Writer
+	Notices  io.Writer
 
 	history  []llm.Message
 	tokens   int
@@ -44,14 +47,14 @@ type Agent struct {
 }
 
 // New starts a conversation. A non-empty system prompt stands in front of the
-// history. The output writer receives streamed text; the notices writer
-// receives the command lines.
+// history. The output writer receives streamed text, the thinking writer the
+// streamed reasoning, and the notices writer the command lines.
 func New(
 	client *llm.Client,
 	runner shell.Runner,
 	systemPrompt string,
 	maxTurns int,
-	out, notices io.Writer,
+	out, thinking, notices io.Writer,
 ) *Agent {
 	if maxTurns <= 0 {
 		maxTurns = 1
@@ -63,6 +66,7 @@ func New(
 		SystemPrompt: system,
 		MaxTurns:     maxTurns,
 		Out:          out,
+		Thinking:     thinking,
 		Notices:      notices,
 	}
 	if system != "" {
@@ -114,7 +118,10 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 	tools := []llm.Tool{a.tool()}
 
 	for range a.MaxTurns {
-		reply, usage, err := a.Client.Complete(ctx, a.history, tools, a.write)
+		reply, usage, err := a.Client.Complete(ctx, a.history, tools, llm.Stream{
+			Text:     a.write,
+			Thinking: a.writeThinking,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -156,13 +163,23 @@ func estimateTokens(messages []llm.Message) int {
 	return (chars + charsPerToken - 1) / charsPerToken
 }
 
-// write sends one streamed fragment to the output writer, remembering the
-// first failure so Ask can report it.
+// write sends one streamed fragment to the output writer.
 func (a *Agent) write(text string) {
-	if a.Out == nil || a.writeErr != nil {
+	a.writeTo(a.Out, text)
+}
+
+// writeThinking sends one reasoning fragment to the thinking writer.
+func (a *Agent) writeThinking(text string) {
+	a.writeTo(a.Thinking, text)
+}
+
+// writeTo sends text to a writer, remembering the first failure so Ask can
+// report it.
+func (a *Agent) writeTo(w io.Writer, text string) {
+	if w == nil || a.writeErr != nil {
 		return
 	}
-	if _, err := io.WriteString(a.Out, text); err != nil {
+	if _, err := io.WriteString(w, text); err != nil {
 		a.writeErr = fmt.Errorf("agent: write streamed text: %w", err)
 	}
 }

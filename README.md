@@ -54,6 +54,11 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-..."
 model = "gpt-4o-mini"
 
+# How much the model may spend on reasoning before it answers: `low`, `high`,
+# or `max`, as the endpoint defines them. An empty value leaves the choice to
+# the endpoint. The reasoning streams to standard error as it arrives.
+reasoning_effort = "low"
+
 # A command that prints the key. It runs through `$SHELL -c` on every start and
 # wins over `api_key`, which suits a secret manager.
 api_key_command = "op read op://Private/OpenAI/credential"
@@ -74,6 +79,8 @@ max_output_bytes = 65536
 ```
 
 A header in `[headers]` overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
+
+A reasoning model streams its chain of thought before its answer. The program writes those fragments to standard error as they arrive, keeping standard output for the answer alone.
 
 Each environment variable overrides the file:
 

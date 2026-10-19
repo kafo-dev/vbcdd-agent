@@ -76,7 +76,7 @@ func TestCompleteReadsToolCall(t *testing.T) {
 
 	client := New(server.URL+"/v1/", "secret", "test-model", nil, server.Client())
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	message, usage, err := client.Complete(context.Background(), messages, nil, nil)
+	message, usage, err := client.Complete(context.Background(), messages, nil, Stream{})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestCompleteStreamsContent(t *testing.T) {
 	var fragments []string
 	onText := func(text string) { fragments = append(fragments, text) }
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	message, _, err := client.Complete(context.Background(), messages, nil, onText)
+	message, _, err := client.Complete(context.Background(), messages, nil, Stream{Text: onText})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -117,6 +117,42 @@ func TestCompleteStreamsContent(t *testing.T) {
 	}
 	if got := strings.Join(fragments, ""); got != "hello" {
 		t.Fatalf("streamed = %q, want %q", got, "hello")
+	}
+}
+
+func TestCompleteStreamsReasoning(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body.ReasoningEffort != "low" {
+			t.Errorf("reasoning_effort = %q, want %q", body.ReasoningEffort, "low")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeDelta(t, w, map[string]any{"reasoning_content": "hmm"})
+		writeDelta(t, w, map[string]any{"content": "answer"})
+		writeEvent(t, w, "[DONE]")
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "", "test-model", nil, server.Client())
+	client.ReasoningEffort = "low"
+	var thinking []string
+	stream := Stream{Thinking: func(text string) { thinking = append(thinking, text) }}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	message, _, err := client.Complete(context.Background(), messages, nil, stream)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := strings.Join(thinking, ""); got != "hmm" {
+		t.Fatalf("thinking = %q, want %q", got, "hmm")
+	}
+	if message.Content != "answer" {
+		t.Fatalf("content = %q, want %q", message.Content, "answer")
 	}
 }
 
@@ -138,7 +174,7 @@ func TestCompleteSendsCustomHeaders(t *testing.T) {
 	headers := map[string]string{"X-Api-Key": "custom"}
 	client := New(server.URL, "", "test-model", headers, server.Client())
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	if _, _, err := client.Complete(context.Background(), messages, nil, nil); err != nil {
+	if _, _, err := client.Complete(context.Background(), messages, nil, Stream{}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 }
@@ -153,7 +189,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 
 	client := New(server.URL, "secret", "test-model", nil, server.Client())
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	if _, _, err := client.Complete(context.Background(), messages, nil, nil); err == nil {
+	if _, _, err := client.Complete(context.Background(), messages, nil, Stream{}); err == nil {
 		t.Fatal("Complete accepted a 401")
 	}
 }
@@ -161,7 +197,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 func TestCompleteRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
 	client := New("http://example.invalid", "key", "model", nil, nil)
-	if _, _, err := client.Complete(context.Background(), nil, nil, nil); err == nil {
+	if _, _, err := client.Complete(context.Background(), nil, nil, Stream{}); err == nil {
 		t.Fatal("Complete accepted no messages")
 	}
 }
