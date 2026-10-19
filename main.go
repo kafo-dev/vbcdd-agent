@@ -143,7 +143,7 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 		}
 	}()
 
-	ag := agent.New(client, runner, cfg.SystemPrompt, cfg.MaxTurns, os.Stderr)
+	ag := agent.New(client, runner, cfg.SystemPrompt, cfg.MaxTurns, os.Stdout, os.Stderr)
 	if resumed != nil {
 		ag.Restore(resumed)
 	}
@@ -315,14 +315,13 @@ func oneShot(ag *agent.Agent, writer *transcript.Writer, saved *int, logger *slo
 	return answer(ag, writer, saved, logger, strings.TrimSpace(message))
 }
 
-// answer runs one turn, prints the reply, and appends the new messages to the
-// transcript.
+// answer runs one turn, which streams the reply to standard output, then
+// appends the new messages to the transcript.
 func answer(ag *agent.Agent, writer *transcript.Writer, saved *int, logger *slog.Logger, message string) error {
-	reply, err := ag.Ask(context.Background(), message)
-	if err != nil {
+	if _, err := ag.Ask(context.Background(), message); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, reply)
+	fmt.Fprintln(os.Stdout)
 	return save(writer, ag, saved, logger)
 }
 

@@ -44,13 +44,23 @@ type Agent struct {
 	Runner       shell.Runner
 	SystemPrompt string
 	MaxTurns     int
-	Notices      io.Writer
+	// Out receives the assistant's text as the model streams it.
+	Out     io.Writer
+	Notices io.Writer
 
-	history []llm.Message
+	history  []llm.Message
+	writeErr error
 }
 
-// New starts a conversation with the system prompt in front.
-func New(client *llm.Client, runner shell.Runner, systemPrompt string, maxTurns int, notices io.Writer) *Agent {
+// New starts a conversation with the system prompt in front. The output writer
+// receives streamed text; the notices writer receives the command lines.
+func New(
+	client *llm.Client,
+	runner shell.Runner,
+	systemPrompt string,
+	maxTurns int,
+	out, notices io.Writer,
+) *Agent {
 	if maxTurns <= 0 {
 		maxTurns = 1
 	}
@@ -63,6 +73,7 @@ func New(client *llm.Client, runner shell.Runner, systemPrompt string, maxTurns 
 		Runner:       runner,
 		SystemPrompt: system,
 		MaxTurns:     maxTurns,
+		Out:          out,
 		Notices:      notices,
 	}
 	agent.history = []llm.Message{{Role: llm.RoleSystem, Content: system}}
@@ -98,12 +109,16 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 		return "", fmt.Errorf("agent: empty input")
 	}
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: input})
+	a.writeErr = nil
 	tools := []llm.Tool{a.tool()}
 
 	for range a.MaxTurns {
-		reply, err := a.Client.Complete(ctx, a.history, tools)
+		reply, err := a.Client.Complete(ctx, a.history, tools, a.write)
 		if err != nil {
 			return "", err
+		}
+		if a.writeErr != nil {
+			return "", a.writeErr
 		}
 		a.history = append(a.history, reply)
 		if len(reply.ToolCalls) == 0 {
@@ -112,6 +127,17 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 		a.runToolCalls(ctx, reply.ToolCalls)
 	}
 	return "", fmt.Errorf("agent: gave up after %d turns without a final answer", a.MaxTurns)
+}
+
+// write sends one streamed fragment to the output writer, remembering the
+// first failure so Ask can report it.
+func (a *Agent) write(text string) {
+	if a.Out == nil || a.writeErr != nil {
+		return
+	}
+	if _, err := io.WriteString(a.Out, text); err != nil {
+		a.writeErr = fmt.Errorf("agent: write streamed text: %w", err)
+	}
 }
 
 // runToolCalls executes each requested call and appends its result.

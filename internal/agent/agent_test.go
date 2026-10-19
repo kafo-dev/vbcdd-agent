@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -49,12 +51,38 @@ func scripted(t *testing.T, command string) *httptest.Server {
 	}))
 }
 
+// writeReply streams a message as the server-sent events the endpoint sends.
 func writeReply(t *testing.T, w http.ResponseWriter, message llm.Message) {
 	t.Helper()
-	reply := map[string]any{"choices": []map[string]any{{"message": message}}}
-	if err := json.NewEncoder(w).Encode(reply); err != nil {
-		t.Errorf("encode reply: %v", err)
+	w.Header().Set("Content-Type", "text/event-stream")
+	if message.Content != "" {
+		delta, err := json.Marshal(map[string]any{
+			"choices": []map[string]any{{"delta": map[string]any{"content": message.Content}}},
+		})
+		if err != nil {
+			t.Errorf("encode delta: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", delta)
 	}
+	for index, call := range message.ToolCalls {
+		fragment := map[string]any{
+			"index": index,
+			"id":    call.ID,
+			"type":  call.Type,
+			"function": map[string]any{
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			},
+		}
+		delta, err := json.Marshal(map[string]any{
+			"choices": []map[string]any{{"delta": map[string]any{"tool_calls": []any{fragment}}}},
+		})
+		if err != nil {
+			t.Errorf("encode delta: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", delta)
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
 func TestAskRunsShellTool(t *testing.T) {
@@ -64,7 +92,8 @@ func TestAskRunsShellTool(t *testing.T) {
 
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
 	client := llm.New(server.URL, "key", "model", nil, server.Client())
-	ag := New(client, runner, "be brief", 5, nil)
+	var streamed bytes.Buffer
+	ag := New(client, runner, "be brief", 5, &streamed, nil)
 
 	reply, err := ag.Ask(context.Background(), "say hi")
 	if err != nil {
@@ -72,6 +101,9 @@ func TestAskRunsShellTool(t *testing.T) {
 	}
 	if !strings.Contains(reply, "hi") {
 		t.Fatalf("reply = %q, want the command output", reply)
+	}
+	if !strings.Contains(streamed.String(), "hi") {
+		t.Fatalf("streamed = %q, want the command output", streamed.String())
 	}
 	history := ag.History()
 	if len(history) != 4 {
@@ -84,7 +116,7 @@ func TestAskRunsShellTool(t *testing.T) {
 
 func TestHistoryDropsSystemPrompt(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "keep quiet", 3, nil)
+	ag := New(nil, shell.Runner{}, "keep quiet", 3, nil, nil)
 	if got := ag.History(); len(got) != 0 {
 		t.Fatalf("History = %d messages, want 0", len(got))
 	}
@@ -100,7 +132,7 @@ func TestHistoryDropsSystemPrompt(t *testing.T) {
 
 func TestAskRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "", 3, nil)
+	ag := New(nil, shell.Runner{}, "", 3, nil, nil)
 	if _, err := ag.Ask(context.Background(), "   "); err == nil {
 		t.Fatal("Ask accepted empty input")
 	}
