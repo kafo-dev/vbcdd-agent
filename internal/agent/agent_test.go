@@ -63,7 +63,7 @@ func TestAskRunsShellTool(t *testing.T) {
 	defer server.Close()
 
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
-	client := llm.New(server.URL, "key", "model", server.Client())
+	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	ag := New(client, runner, "be brief", 5, nil)
 
 	reply, err := ag.Ask(context.Background(), "say hi")

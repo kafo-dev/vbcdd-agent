@@ -73,6 +73,54 @@ func TestLoadReadsPromptFile(t *testing.T) {
 	}
 }
 
+func TestLoadReadsHeaders(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvConfigDir, dir)
+	t.Setenv(EnvDataDir, t.TempDir())
+	body := "[headers]\n\"X-Api-Key\" = \"custom\"\n"
+	if err := os.WriteFile(filepath.Join(dir, configName), []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Headers["X-Api-Key"] != "custom" {
+		t.Fatalf("header = %q, want %q", cfg.Headers["X-Api-Key"], "custom")
+	}
+}
+
+func TestResolveAPIKeyRunsCommand(t *testing.T) {
+	t.Parallel()
+	cfg := Config{APIKeyCommand: "printf '  from-command  '"}
+	if err := cfg.ResolveAPIKey(); err != nil {
+		t.Fatalf("ResolveAPIKey: %v", err)
+	}
+	if cfg.APIKey != "from-command" {
+		t.Fatalf("key = %q, want %q", cfg.APIKey, "from-command")
+	}
+}
+
+func TestResolveAPIKeyReportsEmptyOutput(t *testing.T) {
+	t.Parallel()
+	cfg := Config{APIKeyCommand: "true"}
+	if err := cfg.ResolveAPIKey(); err == nil {
+		t.Fatal("ResolveAPIKey accepted a command that printed nothing")
+	}
+}
+
+func TestResolveAPIKeyLeavesInlineKey(t *testing.T) {
+	t.Parallel()
+	cfg := Config{APIKey: "inline"}
+	if err := cfg.ResolveAPIKey(); err != nil {
+		t.Fatalf("ResolveAPIKey: %v", err)
+	}
+	if cfg.APIKey != "inline" {
+		t.Fatalf("key = %q, want %q", cfg.APIKey, "inline")
+	}
+}
+
 func TestValidateRejectsMissingKey(t *testing.T) {
 	t.Parallel()
 	cfg := Config{BaseURL: DefaultBaseURL, Model: DefaultModel}

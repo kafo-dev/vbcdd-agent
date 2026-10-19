@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -45,12 +46,23 @@ type options struct {
 	systemPrompt     string
 	systemPromptFile string
 	session          string
+	headers          stringList
 	cont             bool
 	list             bool
 	once             bool
 	maxTurns         int
 	shellTimeout     int
 	dir              string
+}
+
+// stringList collects a flag that may repeat.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ", ") }
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
 
 func run() error {
@@ -82,6 +94,7 @@ func parseFlags() options {
 	flag.StringVar(&opts.baseURL, "base-url", "", "OpenAI-compatible base URL, overriding the configuration")
 	flag.StringVar(&opts.apiKey, "api-key", "", "API key, overriding the configuration")
 	flag.StringVar(&opts.model, "model", "", "model name, overriding the configuration")
+	flag.Var(&opts.headers, "header", "extra request header as 'Name: value', repeatable")
 	flag.StringVar(&opts.systemPrompt, "system-prompt", "", "standing instruction for the conversation")
 	flag.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "file holding the standing instruction")
 	flag.StringVar(&opts.session, "session", "", "resume the conversation with this id")
@@ -118,7 +131,7 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 		}
 	}
 	runner := shell.New("", dir, time.Duration(cfg.ShellTimeoutSeconds)*time.Second, cfg.MaxOutputBytes)
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, nil)
+	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Headers, nil)
 
 	writer, resumed, err := openTranscript(store, opts)
 	if err != nil {
@@ -162,6 +175,10 @@ func loadConfig(opts options) (config.Config, error) {
 	}
 	if opts.apiKey != "" {
 		cfg.APIKey = opts.apiKey
+		cfg.APIKeyCommand = ""
+	}
+	if err = cfg.ResolveAPIKey(); err != nil {
+		return config.Config{}, err
 	}
 	if opts.model != "" {
 		cfg.Model = opts.model
@@ -177,6 +194,16 @@ func loadConfig(opts options) (config.Config, error) {
 		}
 		cfg.SystemPrompt = string(raw)
 	}
+	if len(opts.headers) > 0 {
+		headers, headerErr := parseHeaders(opts.headers)
+		if headerErr != nil {
+			return config.Config{}, headerErr
+		}
+		if cfg.Headers == nil {
+			cfg.Headers = map[string]string{}
+		}
+		maps.Copy(cfg.Headers, headers)
+	}
 	if opts.maxTurns > 0 {
 		cfg.MaxTurns = opts.maxTurns
 	}
@@ -184,6 +211,23 @@ func loadConfig(opts options) (config.Config, error) {
 		cfg.ShellTimeoutSeconds = opts.shellTimeout
 	}
 	return cfg, nil
+}
+
+// parseHeaders turns repeated `Name: value` arguments into a map.
+func parseHeaders(raw []string) (map[string]string, error) {
+	headers := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		name, value, ok := strings.Cut(entry, ":")
+		if !ok {
+			return nil, fmt.Errorf("main: header %q lacks a colon", entry)
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("main: header %q names no field", entry)
+		}
+		headers[name] = strings.TrimSpace(value)
+	}
+	return headers, nil
 }
 
 // openTranscript resumes a conversation or starts one.

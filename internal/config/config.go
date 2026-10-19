@@ -6,12 +6,16 @@
 package config
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -46,18 +50,25 @@ const (
 	DefaultShellTimeoutSeconds = 60
 	// DefaultMaxOutputBytes caps the output one shell command returns.
 	DefaultMaxOutputBytes = 64 << 10
+
+	// keyCommandTimeout bounds the command that prints the API key.
+	keyCommandTimeout = 15 * time.Second
+	// keyCommandMaxOutput caps what that command may print.
+	keyCommandMaxOutput = 8 << 10
 )
 
 // Config is the whole file. An empty field falls back to its default.
 type Config struct {
-	BaseURL             string `toml:"base_url"`
-	APIKey              string `toml:"api_key"`
-	Model               string `toml:"model"`
-	SystemPrompt        string `toml:"system_prompt"`
-	SystemPromptFile    string `toml:"system_prompt_file"`
-	MaxTurns            int    `toml:"max_turns"`
-	ShellTimeoutSeconds int    `toml:"shell_timeout_seconds"`
-	MaxOutputBytes      int    `toml:"max_output_bytes"`
+	BaseURL             string            `toml:"base_url"`
+	APIKey              string            `toml:"api_key"`
+	APIKeyCommand       string            `toml:"api_key_command"`
+	Model               string            `toml:"model"`
+	SystemPrompt        string            `toml:"system_prompt"`
+	SystemPromptFile    string            `toml:"system_prompt_file"`
+	Headers             map[string]string `toml:"headers"`
+	MaxTurns            int               `toml:"max_turns"`
+	ShellTimeoutSeconds int               `toml:"shell_timeout_seconds"`
+	MaxOutputBytes      int               `toml:"max_output_bytes"`
 
 	// Path records the file the configuration came from, empty when the
 	// program runs on defaults.
@@ -206,6 +217,53 @@ func (c *Config) Validate() error {
 		return errors.New("config: api_key is empty: set it in the config file or in " + EnvAPIKey)
 	}
 	return nil
+}
+
+// ResolveAPIKey runs `api_key_command` and stores its output as the key. A
+// configured command wins over the inline key, because it carries the fresher
+// credential. An empty command leaves the key as it stands.
+func (c *Config) ResolveAPIKey() error {
+	if strings.TrimSpace(c.APIKeyCommand) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), keyCommandTimeout)
+	defer cancel()
+
+	shellName := os.Getenv("SHELL")
+	if shellName == "" {
+		shellName = "/bin/sh"
+	}
+	//nolint:gosec // G204: the user configured this command to print the key.
+	cmd := exec.CommandContext(ctx, shellName, "-c", c.APIKeyCommand)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &limitedWriter{target: &stdout, max: keyCommandMaxOutput}
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("config: %s: %w: %s", c.APIKeyCommand, err, strings.TrimSpace(stderr.String()))
+	}
+	key := strings.TrimSpace(stdout.String())
+	if key == "" {
+		return fmt.Errorf("config: %s printed no key", c.APIKeyCommand)
+	}
+	c.APIKey = key
+	return nil
+}
+
+// limitedWriter collects at most max bytes and drops the rest.
+type limitedWriter struct {
+	target *bytes.Buffer
+	max    int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	written := len(p)
+	if room := w.max - w.target.Len(); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		w.target.Write(p)
+	}
+	return written, nil
 }
 
 // expandHome resolves a leading `~` against the user's home directory.

@@ -90,12 +90,16 @@ type Client struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// Headers carries extra request headers, such as a provider's
+	// authentication scheme. A custom header wins over the default the
+	// client would set.
+	Headers map[string]string
 	HTTP    *http.Client
 }
 
 // New builds a client bound to an endpoint. An empty HTTP client gets the
 // default.
-func New(baseURL, apiKey, model string, httpClient *http.Client) *Client {
+func New(baseURL, apiKey, model string, headers map[string]string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: requestTimeout}
 	}
@@ -103,6 +107,7 @@ func New(baseURL, apiKey, model string, httpClient *http.Client) *Client {
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
 		Model:   model,
+		Headers: headers,
 		HTTP:    httpClient,
 	}
 }
@@ -126,9 +131,16 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool)
 	if err != nil {
 		return Message{}, fmt.Errorf("llm: build request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if c.APIKey != "" {
+	for name, value := range c.Headers {
+		req.Header.Set(name, value)
+	}
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	if c.APIKey != "" && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	resp, err := c.HTTP.Do(req)

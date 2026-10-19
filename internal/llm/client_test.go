@@ -36,7 +36,7 @@ func TestCompleteReadsToolCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL+"/v1/", "secret", "test-model", server.Client())
+	client := New(server.URL+"/v1/", "secret", "test-model", nil, server.Client())
 	message, err := client.Complete(context.Background(), []Message{{Role: RoleUser, Content: "go"}}, nil)
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -49,6 +49,31 @@ func TestCompleteReadsToolCall(t *testing.T) {
 	}
 }
 
+func TestCompleteSendsCustomHeaders(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Api-Key"); got != "custom" {
+			t.Errorf("X-Api-Key = %q, want %q", got, "custom")
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want it unset", got)
+		}
+		reply := map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		}
+		if err := json.NewEncoder(w).Encode(reply); err != nil {
+			t.Errorf("encode: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	headers := map[string]string{"X-Api-Key": "custom"}
+	client := New(server.URL, "", "test-model", headers, server.Client())
+	if _, err := client.Complete(context.Background(), []Message{{Role: RoleUser, Content: "go"}}, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+}
+
 func TestCompleteReportsHTTPError(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -57,7 +82,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, "secret", "test-model", server.Client())
+	client := New(server.URL, "secret", "test-model", nil, server.Client())
 	if _, err := client.Complete(context.Background(), []Message{{Role: RoleUser, Content: "go"}}, nil); err == nil {
 		t.Fatal("Complete accepted a 401")
 	}
@@ -65,7 +90,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 
 func TestCompleteRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
-	client := New("http://example.invalid", "key", "model", nil)
+	client := New("http://example.invalid", "key", "model", nil, nil)
 	if _, err := client.Complete(context.Background(), nil, nil); err == nil {
 		t.Fatal("Complete accepted no messages")
 	}

@@ -40,6 +40,7 @@ An interactive prompt starts when standard input refers to a terminal and no arg
 | `-base-url` | Endpoint, overriding the configuration |
 | `-api-key` | Key, overriding the configuration |
 | `-model` | Model name, overriding the configuration |
+| `-header` | Extra request header as `Name: value`, repeatable |
 | `-system-prompt` | Standing instruction for the conversation |
 | `-system-prompt-file` | File holding the standing instruction |
 | `-session` | Resume the conversation with this id |
@@ -62,6 +63,10 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-..."
 model = "gpt-4o-mini"
 
+# A command that prints the key. It runs through `$SHELL -c` on every start and
+# wins over `api_key`, which suits a secret manager.
+api_key_command = "op read op://Private/OpenAI/credential"
+
 # The standing instruction. `system_prompt_file` loads it from a file instead.
 system_prompt = "Answer in one paragraph."
 
@@ -69,7 +74,13 @@ system_prompt = "Answer in one paragraph."
 max_turns = 20
 shell_timeout_seconds = 60
 max_output_bytes = 65536
+
+# Extra request headers, winning over the header the client would set.
+[headers]
+"X-Api-Key" = "..."
 ```
+
+A header in `[headers]`, or one passed to `-header`, overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
 
 Each environment variable overrides the file:
 

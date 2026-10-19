@@ -6,6 +6,10 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-..."
 model = "gpt-4o-mini"
 
+# A command that prints the key. It runs through `$SHELL -c` on every start and
+# wins over `api_key`, which suits a secret manager.
+api_key_command = "op read op://Private/OpenAI/credential"
+
 # The standing instruction. `system_prompt_file` loads it from a file instead.
 system_prompt = "Answer in one paragraph."
 
@@ -13,3 +17,9 @@ system_prompt = "Answer in one paragraph."
 max_turns = 20
 shell_timeout_seconds = 60
 max_output_bytes = 65536
+
+# Extra request headers. One here overrides the header the client would set,
+# so a provider that authenticates under its own name works. This table comes
+# last: every key after its header belongs to it.
+[headers]
+"X-Api-Key" = "..."
