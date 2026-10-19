@@ -173,9 +173,110 @@ func TestAskRecordsReportedUsage(t *testing.T) {
 	if got := ag.Tokens(); got != 105 {
 		t.Fatalf("Tokens = %d, want 105", got)
 	}
-	if got := thinking.String(); got != "hmm" {
-		t.Fatalf("thinking = %q, want %q", got, "hmm")
+	if got := thinking.String(); got != "hmm\n" {
+		t.Fatalf("thinking = %q, want %q", got, "hmm\n")
 	}
+}
+
+// TestAskSeparatesSections checks that the reasoning, the command, what it
+// prints, and the answer each start on their own line even when the model ends
+// a fragment mid-line.
+func TestAskSeparatesSections(t *testing.T) {
+	t.Parallel()
+	turns := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		turns++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turns == 1 {
+			writeDelta(t, w, map[string]any{"reasoning_content": "thinking one"})
+			writeDelta(t, w, map[string]any{"tool_calls": []any{map[string]any{
+				"index": 0,
+				"id":    "call_1",
+				"type":  "function",
+				"function": map[string]any{
+					"name":      shellToolName,
+					"arguments": `{"command":"printf 'hi there'"}`,
+				},
+			}}})
+		} else {
+			writeDelta(t, w, map[string]any{"reasoning_content": "thinking two"})
+			writeDelta(t, w, map[string]any{"content": "answer"})
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
+	client := llm.New(server.URL, "key", "model", nil, server.Client())
+	var answer, thinking, notices bytes.Buffer
+	ag := New(client, runner, "", 5, &answer, &thinking, &notices)
+	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got, want := thinking.String(), "thinking one\nthinking two\n"; got != want {
+		t.Fatalf("thinking = %q, want %q", got, want)
+	}
+	if got, want := notices.String(), "$ printf 'hi there'\nhi there\n[exit code 0]\n"; got != want {
+		t.Fatalf("notices = %q, want %q", got, want)
+	}
+	if got, want := answer.String(), "answer\n"; got != want {
+		t.Fatalf("answer = %q, want %q", got, want)
+	}
+}
+
+// TestAskShowsCommandOutput checks that a command's output and exit code reach
+// the notices writer, not only the model.
+func TestAskShowsCommandOutput(t *testing.T) {
+	t.Parallel()
+	turns := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		turns++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turns == 1 {
+			writeDelta(t, w, map[string]any{"tool_calls": []any{map[string]any{
+				"index": 0,
+				"id":    "call_1",
+				"type":  "function",
+				"function": map[string]any{
+					"name":      shellToolName,
+					"arguments": `{"command":"printf hello; exit 3"}`,
+				},
+			}}})
+		} else {
+			writeDelta(t, w, map[string]any{"content": "done"})
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
+	client := llm.New(server.URL, "key", "model", nil, server.Client())
+	var answer, thinking, notices bytes.Buffer
+	ag := New(client, runner, "", 5, &answer, &thinking, &notices)
+	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got, want := notices.String(), "$ printf hello; exit 3\nhello\n[exit code 3]\n"; got != want {
+		t.Fatalf("notices = %q, want %q", got, want)
+	}
+	if got, want := thinking.String(), ""; got != want {
+		t.Fatalf("thinking = %q, want %q", got, want)
+	}
+	if got, want := answer.String(), "done\n"; got != want {
+		t.Fatalf("answer = %q, want %q", got, want)
+	}
+}
+
+// writeDelta streams one delta to the endpoint's response.
+func writeDelta(t *testing.T, w http.ResponseWriter, delta map[string]any) {
+	t.Helper()
+	event, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": delta}},
+	})
+	if err != nil {
+		t.Errorf("encode delta: %v", err)
+	}
+	fmt.Fprintf(w, "data: %s\n\n", event)
 }
 
 func TestEstimateTokens(t *testing.T) {

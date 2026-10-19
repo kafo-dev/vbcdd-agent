@@ -28,6 +28,19 @@ const toolParameters = `{
   "additionalProperties": false
 }`
 
+// section names the part of the output a streamed fragment belongs to, so
+// one section can be kept apart from the next.
+type section int
+
+// The sections of a turn, in the order they arrive.
+const (
+	sectionNone section = iota
+	sectionReasoning
+	sectionCommand
+	sectionOutput
+	sectionAnswer
+)
+
 // Agent holds one conversation and the loop that advances it.
 type Agent struct {
 	Client       *llm.Client
@@ -39,16 +52,24 @@ type Agent struct {
 	// Thinking receives the model's reasoning as it streams it, before the
 	// answer.
 	Thinking io.Writer
-	Notices  io.Writer
+	// Notices receives each command and the output it prints.
+	Notices io.Writer
 
 	history  []llm.Message
 	tokens   int
 	writeErr error
+	// open is the writer whose last fragment left its line unfinished, and
+	// openSection names the part of the output that fragment belongs to.
+	// Together they keep the reasoning, the commands, what those commands
+	// print, and the answer from running together.
+	open        io.Writer
+	openSection section
 }
 
 // New starts a conversation. A non-empty system prompt stands in front of the
 // history. The output writer receives streamed text, the thinking writer the
-// streamed reasoning, and the notices writer the command lines.
+// streamed reasoning, and the notices writer the command lines and what they
+// print.
 func New(
 	client *llm.Client,
 	runner shell.Runner,
@@ -115,6 +136,8 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 	}
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: input})
 	a.writeErr = nil
+	a.open, a.openSection = nil, sectionNone
+	defer a.endLine()
 	tools := []llm.Tool{a.tool()}
 
 	for range a.MaxTurns {
@@ -134,6 +157,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 			return reply.Content, nil
 		}
 		a.runToolCalls(ctx, reply.ToolCalls)
+		a.endLine()
 	}
 	return "", fmt.Errorf("agent: gave up after %d turns without a final answer", a.MaxTurns)
 }
@@ -163,25 +187,51 @@ func estimateTokens(messages []llm.Message) int {
 	return (chars + charsPerToken - 1) / charsPerToken
 }
 
-// write sends one streamed fragment to the output writer.
+// write sends one streamed fragment of the answer to the output writer.
 func (a *Agent) write(text string) {
-	a.writeTo(a.Out, text)
+	a.writeTo(a.Out, sectionAnswer, text)
 }
 
 // writeThinking sends one reasoning fragment to the thinking writer.
 func (a *Agent) writeThinking(text string) {
-	a.writeTo(a.Thinking, text)
+	a.writeTo(a.Thinking, sectionReasoning, text)
 }
 
-// writeTo sends text to a writer, remembering the first failure so Ask can
-// report it.
-func (a *Agent) writeTo(w io.Writer, text string) {
-	if w == nil || a.writeErr != nil {
+// writeTo opens its section when a different one left a line unfinished, then
+// sends text to its writer. It remembers the first failure so Ask can report
+// it and the section whose line the text leaves unfinished.
+func (a *Agent) writeTo(w io.Writer, where section, text string) {
+	if w == nil || text == "" || a.writeErr != nil {
 		return
 	}
+	a.begin(where)
 	if _, err := io.WriteString(w, text); err != nil {
 		a.writeErr = fmt.Errorf("agent: write streamed text: %w", err)
+		return
 	}
+	if strings.HasSuffix(text, "\n") {
+		a.open, a.openSection = nil, sectionNone
+		return
+	}
+	a.open, a.openSection = w, where
+}
+
+// begin ends the line a different section left unfinished, so the section
+// about to start does not run into it. Fragments of one section join as they
+// stream.
+func (a *Agent) begin(next section) {
+	if a.openSection == next {
+		return
+	}
+	a.endLine()
+}
+
+// endLine finishes the line a section left unfinished, if any.
+func (a *Agent) endLine() {
+	if a.open == nil {
+		return
+	}
+	a.writeTo(a.open, a.openSection, "\n")
 }
 
 // runToolCalls executes each requested call and appends its result.
@@ -218,15 +268,20 @@ func (a *Agent) dispatch(ctx context.Context, call llm.ToolCall) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return render(res), nil
+	result := render(res)
+	a.output(result)
+	return result, nil
 }
 
 // notice reports a command before it runs.
 func (a *Agent) notice(command string) {
-	if a.Notices == nil {
-		return
-	}
-	fmt.Fprintf(a.Notices, "$ %s\n", command)
+	a.writeTo(a.Notices, sectionCommand, "$ "+command+"\n")
+}
+
+// output shows what a command printed, so the run shows the work and not only
+// the request.
+func (a *Agent) output(text string) {
+	a.writeTo(a.Notices, sectionOutput, text)
 }
 
 // render turns a result into the text the model reads next.

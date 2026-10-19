@@ -228,13 +228,12 @@ func oneShot(ag *agent.Agent, writer *transcript.Writer, saved *int, logger *slo
 	return answer(ag, writer, saved, logger, strings.TrimSpace(message))
 }
 
-// answer runs one turn, which streams the reply to standard output, then
-// appends the new messages to the transcript.
+// answer runs one turn, which streams the reply to standard output and ends
+// its line, then appends the new messages to the transcript.
 func answer(ag *agent.Agent, writer *transcript.Writer, saved *int, logger *slog.Logger, message string) error {
 	if _, err := ag.Ask(context.Background(), message); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout)
 	return save(writer, ag, saved, logger)
 }
 
