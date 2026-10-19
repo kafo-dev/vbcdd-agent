@@ -130,6 +130,18 @@ func TestHistoryDropsSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestNewOmitsEmptySystemPrompt(t *testing.T) {
+	t.Parallel()
+	ag := New(nil, shell.Runner{}, "   ", 3, nil, nil)
+	if len(ag.history) != 0 {
+		t.Fatalf("history = %d messages, want none", len(ag.history))
+	}
+	ag.Restore([]llm.Message{{Role: llm.RoleUser, Content: "earlier"}})
+	if len(ag.history) != 1 || ag.history[0].Role != llm.RoleUser {
+		t.Fatalf("restored history = %+v, want one user message", ag.history)
+	}
+}
+
 func TestAskRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
 	ag := New(nil, shell.Runner{}, "", 3, nil, nil)

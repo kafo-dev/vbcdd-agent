@@ -10,7 +10,9 @@ model = "gpt-4o-mini"
 # wins over `api_key`, which suits a secret manager.
 api_key_command = "op read op://Private/OpenAI/credential"
 
-# The standing instruction. `system_prompt_file` loads it from a file instead.
+# The standing instruction. The program ships none, so this key is the only
+# place a prompt enters the conversation. `system_prompt_file` loads it from a
+# file instead.
 system_prompt = "Answer in one paragraph."
 
 # Bounds on a single request.

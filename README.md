@@ -37,21 +37,12 @@ An interactive prompt starts when standard input refers to a terminal and no arg
 
 | Flag | Effect |
 | --- | --- |
-| `-base-url` | Endpoint, overriding the configuration |
-| `-api-key` | Key, overriding the configuration |
-| `-model` | Model name, overriding the configuration |
-| `-header` | Extra request header as `Name: value`, repeatable |
-| `-system-prompt` | Standing instruction for the conversation |
-| `-system-prompt-file` | File holding the standing instruction |
 | `-session` | Resume the conversation with this id |
 | `-continue` | Resume the most recent conversation |
 | `-list` | Print saved conversations and exit |
 | `-once` | Answer one message from standard input, then exit |
-| `-max-turns` | Bound on the tool loop of one message |
-| `-shell-timeout` | Seconds one shell command may run |
-| `-dir` | Working directory for shell commands |
 
-Every command runs through `$SHELL` with `-c`, in the current directory unless `-dir` names another.
+Every command runs through `$SHELL` with `-c`, in the current working directory.
 
 ## Configuration
 
@@ -67,7 +58,9 @@ model = "gpt-4o-mini"
 # wins over `api_key`, which suits a secret manager.
 api_key_command = "op read op://Private/OpenAI/credential"
 
-# The standing instruction. `system_prompt_file` loads it from a file instead.
+# The standing instruction. The program ships none, so this key is the only
+# place a prompt enters the conversation. `system_prompt_file` loads it from a
+# file instead.
 system_prompt = "Answer in one paragraph."
 
 # Bounds on a single request.
@@ -80,7 +73,7 @@ max_output_bytes = 65536
 "X-Api-Key" = "..."
 ```
 
-A header in `[headers]`, or one passed to `-header`, overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
+A header in `[headers]` overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
 
 Each environment variable overrides the file:
 

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"os"
 	"strings"
 	"time"
@@ -40,29 +39,10 @@ func main() {
 }
 
 type options struct {
-	baseURL          string
-	apiKey           string
-	model            string
-	systemPrompt     string
-	systemPromptFile string
-	session          string
-	headers          stringList
-	cont             bool
-	list             bool
-	once             bool
-	maxTurns         int
-	shellTimeout     int
-	dir              string
-}
-
-// stringList collects a flag that may repeat.
-type stringList []string
-
-func (s *stringList) String() string { return strings.Join(*s, ", ") }
-
-func (s *stringList) Set(value string) error {
-	*s = append(*s, value)
-	return nil
+	session string
+	cont    bool
+	list    bool
+	once    bool
 }
 
 func run() error {
@@ -88,34 +68,21 @@ func run() error {
 	return serve(opts, store, logger)
 }
 
-// parseFlags reads the command line.
+// parseFlags reads the command line. Configuration comes from the file alone,
+// so the flags name only what a run does, never what it talks to.
 func parseFlags() options {
 	var opts options
-	flag.StringVar(&opts.baseURL, "base-url", "", "OpenAI-compatible base URL, overriding the configuration")
-	flag.StringVar(&opts.apiKey, "api-key", "", "API key, overriding the configuration")
-	flag.StringVar(&opts.model, "model", "", "model name, overriding the configuration")
-	flag.Var(&opts.headers, "header", "extra request header as 'Name: value', repeatable")
-	flag.StringVar(&opts.systemPrompt, "system-prompt", "", "standing instruction for the conversation")
-	flag.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "file holding the standing instruction")
 	flag.StringVar(&opts.session, "session", "", "resume the conversation with this id")
 	flag.BoolVar(&opts.cont, "continue", false, "resume the most recent conversation")
 	flag.BoolVar(&opts.list, "list", false, "list saved conversations and exit")
 	flag.BoolVar(&opts.once, "once", false, "answer one message from the arguments or standard input, then exit")
-	flag.IntVar(&opts.maxTurns, "max-turns", 0, "bound on the tool loop of one message, overriding the configuration")
-	flag.IntVar(
-		&opts.shellTimeout,
-		"shell-timeout",
-		0,
-		"seconds one shell command may run, overriding the configuration",
-	)
-	flag.StringVar(&opts.dir, "dir", "", "working directory for shell commands, empty for the current one")
 	flag.Parse()
 	return opts
 }
 
 // serve builds the engine and answers until the conversation ends.
 func serve(opts options, store transcript.Store, logger *slog.Logger) error {
-	cfg, err := loadConfig(opts)
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -124,11 +91,9 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 	}
 	logger.Debug("configuration resolved", "path", cfg.Path, "base_url", cfg.BaseURL, "model", cfg.Model)
 
-	dir := opts.dir
-	if dir == "" {
-		if dir, err = os.Getwd(); err != nil {
-			return fmt.Errorf("main: working directory: %w", err)
-		}
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("main: working directory: %w", err)
 	}
 	runner := shell.New("", dir, time.Duration(cfg.ShellTimeoutSeconds)*time.Second, cfg.MaxOutputBytes)
 	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Headers, nil)
@@ -164,70 +129,17 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 	}
 }
 
-// loadConfig reads the file and applies the flag overrides over it.
-func loadConfig(opts options) (config.Config, error) {
+// loadConfig reads the configuration file and resolves the API key. No flag
+// shadows the file; it is the source of truth for what the client talks to.
+func loadConfig() (config.Config, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return config.Config{}, err
 	}
-	if opts.baseURL != "" {
-		cfg.BaseURL = opts.baseURL
-	}
-	if opts.apiKey != "" {
-		cfg.APIKey = opts.apiKey
-		cfg.APIKeyCommand = ""
-	}
 	if err = cfg.ResolveAPIKey(); err != nil {
 		return config.Config{}, err
 	}
-	if opts.model != "" {
-		cfg.Model = opts.model
-	}
-	if opts.systemPrompt != "" {
-		cfg.SystemPrompt = opts.systemPrompt
-	}
-	if opts.systemPromptFile != "" {
-		cfg.SystemPromptFile = opts.systemPromptFile
-		raw, readErr := os.ReadFile(cfg.SystemPromptFile)
-		if readErr != nil {
-			return config.Config{}, fmt.Errorf("main: system prompt file: %w", readErr)
-		}
-		cfg.SystemPrompt = string(raw)
-	}
-	if len(opts.headers) > 0 {
-		headers, headerErr := parseHeaders(opts.headers)
-		if headerErr != nil {
-			return config.Config{}, headerErr
-		}
-		if cfg.Headers == nil {
-			cfg.Headers = map[string]string{}
-		}
-		maps.Copy(cfg.Headers, headers)
-	}
-	if opts.maxTurns > 0 {
-		cfg.MaxTurns = opts.maxTurns
-	}
-	if opts.shellTimeout > 0 {
-		cfg.ShellTimeoutSeconds = opts.shellTimeout
-	}
 	return cfg, nil
-}
-
-// parseHeaders turns repeated `Name: value` arguments into a map.
-func parseHeaders(raw []string) (map[string]string, error) {
-	headers := make(map[string]string, len(raw))
-	for _, entry := range raw {
-		name, value, ok := strings.Cut(entry, ":")
-		if !ok {
-			return nil, fmt.Errorf("main: header %q lacks a colon", entry)
-		}
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return nil, fmt.Errorf("main: header %q names no field", entry)
-		}
-		headers[name] = strings.TrimSpace(value)
-	}
-	return headers, nil
 }
 
 // openTranscript resumes a conversation or starts one.

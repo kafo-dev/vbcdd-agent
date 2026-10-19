@@ -3,7 +3,6 @@ package agent
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,15 +11,6 @@ import (
 	"vbcdd.kafo.dev/agent/internal/llm"
 	"vbcdd.kafo.dev/agent/internal/shell"
 )
-
-// defaultSystemPrompt holds the standing instruction shipped with the tool.
-//
-//go:embed prompt.md
-var defaultSystemPrompt string
-
-// DefaultSystemPrompt is that instruction, with the surrounding blank lines
-// removed.
-var DefaultSystemPrompt = strings.TrimSpace(defaultSystemPrompt)
 
 // shellToolName is the one tool the model may call.
 const shellToolName = "shell"
@@ -52,8 +42,9 @@ type Agent struct {
 	writeErr error
 }
 
-// New starts a conversation with the system prompt in front. The output writer
-// receives streamed text; the notices writer receives the command lines.
+// New starts a conversation. A non-empty system prompt stands in front of the
+// history. The output writer receives streamed text; the notices writer
+// receives the command lines.
 func New(
 	client *llm.Client,
 	runner shell.Runner,
@@ -65,9 +56,6 @@ func New(
 		maxTurns = 1
 	}
 	system := strings.TrimSpace(systemPrompt)
-	if system == "" {
-		system = DefaultSystemPrompt
-	}
 	agent := &Agent{
 		Client:       client,
 		Runner:       runner,
@@ -76,7 +64,9 @@ func New(
 		Out:          out,
 		Notices:      notices,
 	}
-	agent.history = []llm.Message{{Role: llm.RoleSystem, Content: system}}
+	if system != "" {
+		agent.history = []llm.Message{{Role: llm.RoleSystem, Content: system}}
+	}
 	return agent
 }
 
@@ -97,9 +87,13 @@ func (a *Agent) History() []llm.Message {
 }
 
 // Restore seeds the conversation from a saved transcript, keeping the current
-// system prompt.
+// system prompt when one stands in front.
 func (a *Agent) Restore(messages []llm.Message) {
-	a.history = append([]llm.Message{{Role: llm.RoleSystem, Content: a.SystemPrompt}}, messages...)
+	a.history = make([]llm.Message, 0, len(messages)+1)
+	if a.SystemPrompt != "" {
+		a.history = append(a.history, llm.Message{Role: llm.RoleSystem, Content: a.SystemPrompt})
+	}
+	a.history = append(a.history, messages...)
 }
 
 // Ask appends input and runs the tool loop until the model answers without a
