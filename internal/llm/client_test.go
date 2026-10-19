@@ -31,6 +31,25 @@ func writeDelta(t *testing.T, w http.ResponseWriter, delta map[string]any) {
 	writeEvent(t, w, string(payload))
 }
 
+// writeUsage writes one event carrying token usage, as the endpoint sends it
+// after the last delta when the request asks for it.
+func writeUsage(t *testing.T, w http.ResponseWriter, prompt, completion int) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{},
+		"usage": map[string]any{
+			"prompt_tokens":     prompt,
+			"completion_tokens": completion,
+			"total_tokens":      prompt + completion,
+		},
+	})
+	if err != nil {
+		t.Errorf("encode usage: %v", err)
+		return
+	}
+	writeEvent(t, w, string(payload))
+}
+
 func TestCompleteReadsToolCall(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,14 +69,19 @@ func TestCompleteReadsToolCall(t *testing.T) {
 		writeDelta(t, w, map[string]any{"tool_calls": []any{
 			map[string]any{"index": 0, "function": map[string]any{"arguments": `"ls"}`}},
 		}})
+		writeUsage(t, w, 30, 12)
 		writeEvent(t, w, "[DONE]")
 	}))
 	defer server.Close()
 
 	client := New(server.URL+"/v1/", "secret", "test-model", nil, server.Client())
-	message, err := client.Complete(context.Background(), []Message{{Role: RoleUser, Content: "go"}}, nil, nil)
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	message, usage, err := client.Complete(context.Background(), messages, nil, nil)
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
+	}
+	if usage.Total() != 42 {
+		t.Fatalf("usage = %d, want 42", usage.Total())
 	}
 	if len(message.ToolCalls) != 1 {
 		t.Fatalf("tool calls = %d, want 1", len(message.ToolCalls))
@@ -84,7 +108,7 @@ func TestCompleteStreamsContent(t *testing.T) {
 	var fragments []string
 	onText := func(text string) { fragments = append(fragments, text) }
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	message, err := client.Complete(context.Background(), messages, nil, onText)
+	message, _, err := client.Complete(context.Background(), messages, nil, onText)
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -114,7 +138,7 @@ func TestCompleteSendsCustomHeaders(t *testing.T) {
 	headers := map[string]string{"X-Api-Key": "custom"}
 	client := New(server.URL, "", "test-model", headers, server.Client())
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	if _, err := client.Complete(context.Background(), messages, nil, nil); err != nil {
+	if _, _, err := client.Complete(context.Background(), messages, nil, nil); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 }
@@ -129,7 +153,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 
 	client := New(server.URL, "secret", "test-model", nil, server.Client())
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	if _, err := client.Complete(context.Background(), messages, nil, nil); err == nil {
+	if _, _, err := client.Complete(context.Background(), messages, nil, nil); err == nil {
 		t.Fatal("Complete accepted a 401")
 	}
 }
@@ -137,7 +161,7 @@ func TestCompleteReportsHTTPError(t *testing.T) {
 func TestCompleteRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
 	client := New("http://example.invalid", "key", "model", nil, nil)
-	if _, err := client.Complete(context.Background(), nil, nil, nil); err == nil {
+	if _, _, err := client.Complete(context.Background(), nil, nil, nil); err == nil {
 		t.Fatal("Complete accepted no messages")
 	}
 }

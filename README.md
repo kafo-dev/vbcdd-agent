@@ -7,7 +7,7 @@ A terminal agent that answers by running shell commands. It talks to an OpenAI-c
 > This code functions as of the time of writing, yet it has received little to no human review. It must not be regarded as reliable: bugs and stability issues are to be expected.
 
 ```text
-agent> list the Go files changed in the last commit
+agent(0)> list the Go files changed in the last commit
 $ git show --name-only --pretty=format: HEAD
 cmd/vbcdd-agent/main.go
 internal/agent/agent.go
@@ -33,7 +33,7 @@ A message argument answers one request and exits. Standard input supplies the me
 vbcdd-agent "how much free memory does this machine have?" < /dev/null
 ```
 
-An interactive prompt starts when standard input refers to a terminal and no argument names a message. `quit`, `exit`, and Control-D leave it.
+An interactive prompt starts when standard input refers to a terminal and no argument names a message. `quit`, `exit`, and Control-D leave it. The prompt prints the size of the context, in tokens, that the endpoint reported for the last request; when it reported none, the count falls back to one token per four characters.
 
 | Flag | Effect |
 | --- | --- |

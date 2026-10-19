@@ -58,11 +58,33 @@ type ToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// Usage counts the tokens one request consumed.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// Total reports the tokens the request used, summing the halves when the
+// endpoint omits the total.
+func (u Usage) Total() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
+}
+
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []Tool    `json:"tools,omitempty"`
-	Stream   bool      `json:"stream,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []Message      `json:"messages"`
+	Tools         []Tool         `json:"tools,omitempty"`
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks the endpoint to report token usage in the final event.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type apiError struct {
@@ -133,30 +155,43 @@ type streamChunk struct {
 		Delta        streamDelta `json:"delta"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *Usage    `json:"usage,omitempty"`
 	Error *apiError `json:"error,omitempty"`
 }
 
-// Complete sends the conversation and returns the assistant's reply. It streams
-// the reply, calling onText with each content fragment as it arrives. A nil
-// onText discards the fragments but still assembles the message.
-func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool, onText func(string)) (Message, error) {
+// Complete sends the conversation and returns the assistant's reply and the
+// tokens it consumed. It streams the reply, calling onText with each content
+// fragment as it arrives. A nil onText discards the fragments but still
+// assembles the message.
+func (c *Client) Complete(
+	ctx context.Context,
+	messages []Message,
+	tools []Tool,
+	onText func(string),
+) (Message, Usage, error) {
 	if c.BaseURL == "" {
-		return Message{}, fmt.Errorf("llm: base url is empty")
+		return Message{}, Usage{}, fmt.Errorf("llm: base url is empty")
 	}
 	if c.Model == "" {
-		return Message{}, fmt.Errorf("llm: model is empty")
+		return Message{}, Usage{}, fmt.Errorf("llm: model is empty")
 	}
 	if len(messages) == 0 {
-		return Message{}, fmt.Errorf("llm: no messages to send")
+		return Message{}, Usage{}, fmt.Errorf("llm: no messages to send")
 	}
-	request := chatRequest{Model: c.Model, Messages: messages, Tools: tools, Stream: true}
+	request := chatRequest{
+		Model:         c.Model,
+		Messages:      messages,
+		Tools:         tools,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
-		return Message{}, fmt.Errorf("llm: encode request: %w", err)
+		return Message{}, Usage{}, fmt.Errorf("llm: encode request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Message{}, fmt.Errorf("llm: build request: %w", err)
+		return Message{}, Usage{}, fmt.Errorf("llm: build request: %w", err)
 	}
 	for name, value := range c.Headers {
 		req.Header.Set(name, value)
@@ -172,21 +207,22 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool,
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return Message{}, fmt.Errorf("llm: request: %w", err)
+		return Message{}, Usage{}, fmt.Errorf("llm: request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		if readErr != nil {
-			return Message{}, fmt.Errorf("llm: %s: %w", resp.Status, readErr)
+			return Message{}, Usage{}, fmt.Errorf("llm: %s: %w", resp.Status, readErr)
 		}
-		return Message{}, fmt.Errorf("llm: %s: %s", resp.Status, truncate(string(raw), maxErrorBody))
+		return Message{}, Usage{}, fmt.Errorf("llm: %s: %s", resp.Status, truncate(string(raw), maxErrorBody))
 	}
 	return readStream(resp.Body, onText)
 }
 
-// readStream parses the server-sent events into one assistant message.
-func readStream(body io.Reader, onText func(string)) (Message, error) {
+// readStream parses the server-sent events into one assistant message and the
+// tokens the request reported.
+func readStream(body io.Reader, onText func(string)) (Message, Usage, error) {
 	state := streamState{message: Message{Role: RoleAssistant}, onText: onText}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, scannerInit), scannerMax)
@@ -200,29 +236,33 @@ func readStream(body io.Reader, onText func(string)) (Message, error) {
 		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return Message{}, fmt.Errorf("llm: decode stream: %w", err)
+			return Message{}, Usage{}, fmt.Errorf("llm: decode stream: %w", err)
 		}
 		if chunk.Error != nil {
-			return Message{}, fmt.Errorf("llm: %s: %s", chunk.Error.Type, chunk.Error.Message)
+			return Message{}, Usage{}, fmt.Errorf("llm: %s: %s", chunk.Error.Type, chunk.Error.Message)
 		}
 		state.apply(chunk)
 	}
 	if err := scanner.Err(); err != nil {
-		return Message{}, fmt.Errorf("llm: read stream: %w", err)
+		return Message{}, Usage{}, fmt.Errorf("llm: read stream: %w", err)
 	}
 	state.message.ToolCalls = state.calls
-	return state.message, nil
+	return state.message, state.usage, nil
 }
 
 // streamState accumulates one reply across its events.
 type streamState struct {
 	message Message
 	calls   []ToolCall
+	usage   Usage
 	onText  func(string)
 }
 
 // apply folds one event into the reply, reporting new text to the callback.
 func (s *streamState) apply(chunk streamChunk) {
+	if chunk.Usage != nil {
+		s.usage = *chunk.Usage
+	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != "" {
 			s.message.Content += choice.Delta.Content

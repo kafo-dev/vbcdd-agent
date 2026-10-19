@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -105,6 +106,9 @@ func TestAskRunsShellTool(t *testing.T) {
 	if !strings.Contains(streamed.String(), "hi") {
 		t.Fatalf("streamed = %q, want the command output", streamed.String())
 	}
+	if ag.Tokens() == 0 {
+		t.Fatal("Tokens = 0, want an estimate when the endpoint reports none")
+	}
 	history := ag.History()
 	if len(history) != 4 {
 		t.Fatalf("history = %d messages, want 4", len(history))
@@ -127,6 +131,47 @@ func TestHistoryDropsSystemPrompt(t *testing.T) {
 	}
 	if history[0].Content != "earlier" {
 		t.Fatalf("History[0] = %q, want %q", history[0].Content, "earlier")
+	}
+}
+
+func TestAskRecordsReportedUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		content, err := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"content": "hi"}}},
+		})
+		if err != nil {
+			t.Errorf("encode content: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", content)
+		usage, err := json.Marshal(map[string]any{
+			"choices": []any{},
+			"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105},
+		})
+		if err != nil {
+			t.Errorf("encode usage: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", usage)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "key", "model", nil, server.Client())
+	ag := New(client, shell.Runner{}, "", 3, io.Discard, nil)
+	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got := ag.Tokens(); got != 105 {
+		t.Fatalf("Tokens = %d, want 105", got)
+	}
+}
+
+func TestEstimateTokens(t *testing.T) {
+	t.Parallel()
+	messages := []llm.Message{{Role: llm.RoleUser, Content: strings.Repeat("a", 8)}}
+	if got := estimateTokens(messages); got != 2 {
+		t.Fatalf("estimateTokens = %d, want 2", got)
 	}
 }
 

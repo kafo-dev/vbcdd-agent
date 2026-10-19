@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	prompt     = "agent> "
+	prompt     = "agent(%d)> "
 	quitTokens = "quit,exit"
 	// scannerInit is the starting buffer for one line of input.
 	scannerInit = 64 << 10
@@ -197,7 +197,7 @@ func repl(
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, scannerInit), scannerMax)
 	for {
-		fmt.Fprint(os.Stderr, prompt)
+		fmt.Fprintf(os.Stderr, prompt, ag.Tokens())
 		if !scanner.Scan() {
 			break
 		}

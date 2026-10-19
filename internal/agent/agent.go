@@ -39,6 +39,7 @@ type Agent struct {
 	Notices io.Writer
 
 	history  []llm.Message
+	tokens   int
 	writeErr error
 }
 
@@ -94,6 +95,12 @@ func (a *Agent) Restore(messages []llm.Message) {
 		a.history = append(a.history, llm.Message{Role: llm.RoleSystem, Content: a.SystemPrompt})
 	}
 	a.history = append(a.history, messages...)
+	a.tokens = estimateTokens(a.history)
+}
+
+// Tokens reports the size of the context the last request sent, in tokens.
+func (a *Agent) Tokens() int {
+	return a.tokens
 }
 
 // Ask appends input and runs the tool loop until the model answers without a
@@ -107,7 +114,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 	tools := []llm.Tool{a.tool()}
 
 	for range a.MaxTurns {
-		reply, err := a.Client.Complete(ctx, a.history, tools, a.write)
+		reply, usage, err := a.Client.Complete(ctx, a.history, tools, a.write)
 		if err != nil {
 			return "", err
 		}
@@ -115,12 +122,38 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 			return "", a.writeErr
 		}
 		a.history = append(a.history, reply)
+		a.recordUsage(usage)
 		if len(reply.ToolCalls) == 0 {
 			return reply.Content, nil
 		}
 		a.runToolCalls(ctx, reply.ToolCalls)
 	}
 	return "", fmt.Errorf("agent: gave up after %d turns without a final answer", a.MaxTurns)
+}
+
+// recordUsage stores the context size the endpoint reported, or an estimate
+// from the text when it reported none.
+func (a *Agent) recordUsage(usage llm.Usage) {
+	if total := usage.Total(); total > 0 {
+		a.tokens = total
+		return
+	}
+	a.tokens = estimateTokens(a.history)
+}
+
+// charsPerToken is the rule of thumb for an endpoint that reports no usage.
+const charsPerToken = 4
+
+// estimateTokens applies the rule of thumb of one token per four characters.
+func estimateTokens(messages []llm.Message) int {
+	chars := 0
+	for _, message := range messages {
+		chars += len(message.Content)
+		for _, call := range message.ToolCalls {
+			chars += len(call.Function.Name) + len(call.Function.Arguments)
+		}
+	}
+	return (chars + charsPerToken - 1) / charsPerToken
 }
 
 // write sends one streamed fragment to the output writer, remembering the
