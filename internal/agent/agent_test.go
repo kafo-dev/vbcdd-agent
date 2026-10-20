@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -308,5 +309,55 @@ func TestAskRejectsEmptyInput(t *testing.T) {
 	ag := New(nil, shell.Runner{}, "", 3, nil, nil, nil)
 	if _, err := ag.Ask(context.Background(), "   "); err == nil {
 		t.Fatal("Ask accepted empty input")
+	}
+}
+
+func TestAbbreviateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"home itself", home, "~"},
+		{"below home", filepath.Join(home, "SomeDir"), "~/SomeDir"},
+		{"outside home", filepath.Dir(home), filepath.Dir(home)},
+		{"sibling with shared prefix", home + "x", home + "x"},
+	}
+	//nolint:paralleltest // t.Setenv rules out parallel subtests.
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := abbreviateHome(tc.path); got != tc.want {
+				t.Fatalf("abbreviateHome(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParametersAbbreviatesHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := filepath.Join(home, "SomeDir")
+	ag := New(nil, shell.Runner{Shell: "/bin/sh", Dir: dir}, "", 3, nil, nil, nil)
+
+	var schema struct {
+		Properties struct {
+			Cmd struct {
+				Description string `json:"description"`
+			} `json:"cmd"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(ag.parameters(), &schema); err != nil {
+		t.Fatalf("unmarshal parameters: %v", err)
+	}
+	got := schema.Properties.Cmd.Description
+	if !strings.Contains(got, "`~/SomeDir`") {
+		t.Fatalf("description = %q, want the abbreviated working directory", got)
+	}
+	if strings.Contains(got, home) {
+		t.Fatalf("description = %q, want no absolute home path", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"vbcdd.kafo.dev/agent/internal/llm"
@@ -318,11 +319,29 @@ func (a *Agent) parameters() json.RawMessage {
 	description, err := json.Marshal(fmt.Sprintf(
 		"`cmd` is the string passed to `%s -c` in `%s`.",
 		a.Runner.Shell,
-		a.Runner.Dir,
+		abbreviateHome(a.Runner.Dir),
 	))
 	if err != nil {
 		// Marshal of a string cannot fail; the schema stands without it.
 		description = []byte(`""`)
 	}
 	return json.RawMessage(fmt.Sprintf(toolParameters, description))
+}
+
+// abbreviateHome replaces a leading home directory with `~`, so the model
+// meets a short, familiar path instead of an absolute one. Paths outside the
+// home directory and an unresolved home are returned unchanged.
+func abbreviateHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	prefix := home + string(os.PathSeparator)
+	if strings.HasPrefix(path, prefix) {
+		return "~" + path[len(home):]
+	}
+	return path
 }
