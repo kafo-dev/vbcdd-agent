@@ -307,7 +307,7 @@ func (a *Agent) tool() llm.Tool {
 		Type: "function",
 		Function: llm.ToolFunction{
 			Name:        shellToolName,
-			Description: "Run a command line through the system shell and return its combined output and exit code.",
+			Description: "Run a command line through the system shell and return its combined output.",
 			Parameters:  a.parameters(),
 		},
 	}
@@ -317,7 +317,7 @@ func (a *Agent) tool() llm.Tool {
 // working directory so the model writes a command for the environment it meets.
 func (a *Agent) parameters() json.RawMessage {
 	description, err := json.Marshal(fmt.Sprintf(
-		"`cmd` is the string passed to `%s -c` in `%s`.",
+		"Passed to `%s -c` in `%s`.",
 		a.Runner.Shell,
 		abbreviateHome(a.Runner.Dir),
 	))
