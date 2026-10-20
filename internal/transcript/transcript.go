@@ -2,7 +2,8 @@
 //
 // One file holds one conversation. Each line is a message, so a reader keeps
 // what it can understand even when a later line is corrupt. The system prompt
-// stays out: a resumed conversation takes the prompt the run supplies.
+// stays out: a resumed conversation takes the prompt the run supplies. The
+// message type is the SDK's, so its own encoder decides what a line holds.
 package transcript
 
 import (
@@ -17,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"vbcdd.kafo.dev/agent/internal/llm"
+	"charm.land/fantasy"
 )
 
 const (
@@ -123,7 +124,7 @@ func (s Store) Latest() (Session, bool, error) {
 }
 
 // Open returns a conversation by ID together with its messages.
-func (s Store) Open(id string) (Session, []llm.Message, error) {
+func (s Store) Open(id string) (Session, []fantasy.Message, error) {
 	if s.Dir == "" {
 		return Session{}, nil, fmt.Errorf("transcript: no directory")
 	}
@@ -143,14 +144,14 @@ func (s Store) Open(id string) (Session, []llm.Message, error) {
 }
 
 // Read loads the messages from a transcript file.
-func Read(path string) ([]llm.Message, error) {
+func Read(path string) ([]fantasy.Message, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("transcript: open %s: %w", path, err)
 	}
 	defer file.Close()
 
-	messages := []llm.Message{}
+	messages := []fantasy.Message{}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, scannerInit), scannerMax)
 	for scanner.Scan() {
@@ -158,11 +159,11 @@ func Read(path string) ([]llm.Message, error) {
 		if line == "" {
 			continue
 		}
-		var message llm.Message
+		var message fantasy.Message
 		if err = json.Unmarshal([]byte(line), &message); err != nil {
 			return nil, fmt.Errorf("transcript: %s: %w", path, err)
 		}
-		if message.Role == llm.RoleSystem {
+		if message.Role == fantasy.MessageRoleSystem {
 			continue
 		}
 		messages = append(messages, message)
@@ -180,11 +181,11 @@ type Writer struct {
 }
 
 // Append writes one message as a line.
-func (w *Writer) Append(message llm.Message) error {
+func (w *Writer) Append(message fantasy.Message) error {
 	if w.file == nil {
 		return fmt.Errorf("transcript: writer is closed")
 	}
-	if message.Role == llm.RoleSystem {
+	if message.Role == fantasy.MessageRoleSystem {
 		return nil
 	}
 	raw, err := json.Marshal(message)

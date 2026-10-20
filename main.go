@@ -16,10 +16,13 @@ import (
 
 	"vbcdd.kafo.dev/agent/internal/agent"
 	"vbcdd.kafo.dev/agent/internal/config"
-	"vbcdd.kafo.dev/agent/internal/llm"
 	"vbcdd.kafo.dev/agent/internal/logging"
 	"vbcdd.kafo.dev/agent/internal/shell"
 	"vbcdd.kafo.dev/agent/internal/transcript"
+
+	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openai"
+	"charm.land/fantasy/providers/openaicompat"
 )
 
 const (
@@ -96,8 +99,10 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 		return fmt.Errorf("main: working directory: %w", err)
 	}
 	runner := shell.New("", dir, time.Duration(cfg.ShellTimeoutSeconds)*time.Second, cfg.MaxOutputBytes)
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Headers, nil)
-	client.ReasoningEffort = cfg.ReasoningEffort
+	model, err := newModel(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
 
 	writer, resumed, err := openTranscript(store, opts)
 	if err != nil {
@@ -109,7 +114,16 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 		}
 	}()
 
-	ag := agent.New(client, runner, cfg.SystemPrompt, cfg.MaxTurns, os.Stdout, os.Stderr, os.Stderr)
+	ag := agent.New(agent.Config{
+		Model:           model,
+		Runner:          runner,
+		SystemPrompt:    cfg.SystemPrompt,
+		ProviderOptions: providerOptions(cfg),
+		MaxTurns:        cfg.MaxTurns,
+		Out:             os.Stdout,
+		Thinking:        os.Stderr,
+		Notices:         os.Stderr,
+	})
 	if resumed != nil {
 		ag.Restore(resumed)
 	}
@@ -130,6 +144,37 @@ func serve(opts options, store transcript.Store, logger *slog.Logger) error {
 	}
 }
 
+// newModel builds the language model the agent calls from the OpenAI-compatible
+// endpoint the configuration names.
+func newModel(ctx context.Context, cfg config.Config) (fantasy.LanguageModel, error) {
+	provider, err := openaicompat.New(
+		openaicompat.WithBaseURL(cfg.BaseURL),
+		openaicompat.WithAPIKey(cfg.APIKey),
+		openaicompat.WithHeaders(cfg.Headers),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("main: provider: %w", err)
+	}
+	model, err := provider.LanguageModel(ctx, cfg.Model)
+	if err != nil {
+		return nil, fmt.Errorf("main: model %s: %w", cfg.Model, err)
+	}
+	return model, nil
+}
+
+// providerOptions translates the configuration's reasoning effort into the
+// endpoint-specific options the SDK sends. An unset effort leaves the choice to
+// the endpoint.
+func providerOptions(cfg config.Config) fantasy.ProviderOptions {
+	effort := strings.TrimSpace(cfg.ReasoningEffort)
+	if effort == "" {
+		return nil
+	}
+	return openaicompat.NewProviderOptions(&openaicompat.ProviderOptions{
+		ReasoningEffort: new(openai.ReasoningEffort(effort)),
+	})
+}
+
 // loadConfig reads the configuration file and resolves the API key. No flag
 // shadows the file; it is the source of truth for what the client talks to.
 func loadConfig() (config.Config, error) {
@@ -144,7 +189,7 @@ func loadConfig() (config.Config, error) {
 }
 
 // openTranscript resumes a conversation or starts one.
-func openTranscript(store transcript.Store, opts options) (*transcript.Writer, []llm.Message, error) {
+func openTranscript(store transcript.Store, opts options) (*transcript.Writer, []fantasy.Message, error) {
 	switch {
 	case opts.session != "":
 		session, messages, err := store.Open(opts.session)

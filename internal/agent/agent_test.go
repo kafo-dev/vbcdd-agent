@@ -9,16 +9,49 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"vbcdd.kafo.dev/agent/internal/llm"
+	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openaicompat"
+
 	"vbcdd.kafo.dev/agent/internal/shell"
 )
 
-// scripted stands in for the model: the first request asks for a shell
+// newTestAgent wires the agent to a fake endpoint. It fails the test when the
+// provider or the model will not build.
+func newTestAgent(
+	t *testing.T,
+	server *httptest.Server,
+	runner shell.Runner,
+	systemPrompt string,
+	out, thinking, notices io.Writer,
+) *Agent {
+	t.Helper()
+	provider, err := openaicompat.New(
+		openaicompat.WithBaseURL(server.URL),
+		openaicompat.WithAPIKey("key"),
+	)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	model, err := provider.LanguageModel(context.Background(), "model")
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	return New(Config{
+		Model:        model,
+		Runner:       runner,
+		SystemPrompt: systemPrompt,
+		MaxTurns:     5,
+		Out:          out,
+		Thinking:     thinking,
+		Notices:      notices,
+	})
+}
+
+// scripted stands in for the endpoint: the first request asks for a shell
 // command, the second answers in prose.
 func scripted(t *testing.T, command string) *httptest.Server {
 	t.Helper()
@@ -26,65 +59,101 @@ func scripted(t *testing.T, command string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		turns++
 		var body struct {
-			Messages []llm.Message `json:"messages"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		streamHeaders(w)
 		if turns == 1 {
-			writeReply(t, w, llm.Message{
-				Role: llm.RoleAssistant,
-				ToolCalls: []llm.ToolCall{{
-					ID:   "call_1",
-					Type: "function",
-					Function: llm.FunctionCall{
-						Name:      shellToolName,
-						Arguments: `{"cmd":` + strconv.Quote(command) + `}`,
-					},
-				}},
-			})
+			writeToolCall(t, w, command)
 			return
 		}
 		last := body.Messages[len(body.Messages)-1]
-		if last.Role != llm.RoleTool {
-			t.Errorf("last role = %q, want %q", last.Role, llm.RoleTool)
+		if last.Role != "tool" {
+			t.Errorf("last role = %q, want %q", last.Role, "tool")
 		}
-		writeReply(t, w, llm.Message{Role: llm.RoleAssistant, Content: "done: " + last.Content})
+		writeTextDelta(t, w, "done")
+		writeFinish(t, w, "stop", nil)
 	}))
 }
 
-// writeReply streams a message as the server-sent events the endpoint sends.
-func writeReply(t *testing.T, w http.ResponseWriter, message llm.Message) {
-	t.Helper()
+// streamHeaders sets the content type every streamed reply carries.
+func streamHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	if message.Content != "" {
-		delta, err := json.Marshal(map[string]any{
-			"choices": []map[string]any{{"delta": map[string]any{"content": message.Content}}},
-		})
-		if err != nil {
-			t.Errorf("encode delta: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", delta)
+}
+
+// writeToolCall streams one complete tool call and the reason that ends the
+// turn.
+func writeToolCall(t *testing.T, w http.ResponseWriter, command string) {
+	t.Helper()
+	arguments, err := json.Marshal(map[string]any{"cmd": command})
+	if err != nil {
+		t.Errorf("encode arguments: %v", err)
 	}
-	for index, call := range message.ToolCalls {
-		fragment := map[string]any{
-			"index": index,
-			"id":    call.ID,
-			"type":  call.Type,
+	chunk := chunk(map[string]any{
+		"tool_calls": []any{map[string]any{
+			"index": 0,
+			"id":    "call_1",
+			"type":  "function",
 			"function": map[string]any{
-				"name":      call.Function.Name,
-				"arguments": call.Function.Arguments,
+				"name":      shellToolName,
+				"arguments": string(arguments),
 			},
-		}
-		delta, err := json.Marshal(map[string]any{
-			"choices": []map[string]any{{"delta": map[string]any{"tool_calls": []any{fragment}}}},
-		})
-		if err != nil {
-			t.Errorf("encode delta: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", delta)
+		}},
+	}, nil)
+	writeEvent(t, w, chunk)
+	writeFinish(t, w, "tool_calls", nil)
+}
+
+// writeTextDelta streams one content fragment.
+func writeTextDelta(t *testing.T, w http.ResponseWriter, text string) {
+	t.Helper()
+	writeEvent(t, w, chunk(map[string]any{"content": text}, nil))
+}
+
+// writeReasoningDelta streams one reasoning fragment.
+func writeReasoningDelta(t *testing.T, w http.ResponseWriter, text string) {
+	t.Helper()
+	writeEvent(t, w, chunk(map[string]any{"reasoning_content": text}, nil))
+}
+
+// writeFinish streams the final event with the reason the turn ended and the
+// tokens it reported.
+func writeFinish(t *testing.T, w http.ResponseWriter, reason string, usage map[string]any) {
+	t.Helper()
+	writeEvent(t, w, map[string]any{
+		"id":      "chatcmpl-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": reason}},
+		"usage":   usage,
+	})
+}
+
+// chunk renders one streamed chunk that carries delta.
+func chunk(delta map[string]any, finish any) map[string]any {
+	return map[string]any{
+		"id":      "chatcmpl-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}},
 	}
-	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// writeEvent writes one server-sent event.
+func writeEvent(t *testing.T, w http.ResponseWriter, event map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Errorf("encode event: %v", err)
+	}
+	fmt.Fprintf(w, "data: %s\n\n", raw)
 }
 
 func TestAskRunsShellTool(t *testing.T) {
@@ -93,19 +162,18 @@ func TestAskRunsShellTool(t *testing.T) {
 	defer server.Close()
 
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
-	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	var streamed bytes.Buffer
-	ag := New(client, runner, "be brief", 5, &streamed, nil, nil)
+	ag := newTestAgent(t, server, runner, "be brief", &streamed, nil, nil)
 
 	reply, err := ag.Ask(context.Background(), "say hi")
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if !strings.Contains(reply, "hi") {
-		t.Fatalf("reply = %q, want the command output", reply)
+	if !strings.Contains(reply, "done") {
+		t.Fatalf("reply = %q, want the assistant's text", reply)
 	}
-	if !strings.Contains(streamed.String(), "hi") {
-		t.Fatalf("streamed = %q, want the command output", streamed.String())
+	if !strings.Contains(streamed.String(), "done") {
+		t.Fatalf("streamed = %q, want the assistant's text", streamed.String())
 	}
 	if ag.Tokens() == 0 {
 		t.Fatal("Tokens = 0, want an estimate when the endpoint reports none")
@@ -114,60 +182,48 @@ func TestAskRunsShellTool(t *testing.T) {
 	if len(history) != 4 {
 		t.Fatalf("history = %d messages, want 4", len(history))
 	}
-	if history[0].Role != llm.RoleUser {
-		t.Fatalf("first role = %q, want %q", history[0].Role, llm.RoleUser)
+	if history[0].Role != fantasy.MessageRoleUser {
+		t.Fatalf("first role = %q, want %q", history[0].Role, fantasy.MessageRoleUser)
+	}
+	if history[1].Role != fantasy.MessageRoleAssistant {
+		t.Fatalf("second role = %q, want %q", history[1].Role, fantasy.MessageRoleAssistant)
+	}
+	if history[2].Role != fantasy.MessageRoleTool {
+		t.Fatalf("third role = %q, want %q", history[2].Role, fantasy.MessageRoleTool)
 	}
 }
 
 func TestHistoryDropsSystemPrompt(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "keep quiet", 3, nil, nil, nil)
+	ag := New(Config{SystemPrompt: "keep quiet", MaxTurns: 3})
 	if got := ag.History(); len(got) != 0 {
 		t.Fatalf("History = %d messages, want 0", len(got))
 	}
-	ag.Restore([]llm.Message{{Role: llm.RoleUser, Content: "earlier"}})
+	ag.Restore([]fantasy.Message{fantasy.NewUserMessage("earlier")})
 	history := ag.History()
 	if len(history) != 1 {
 		t.Fatalf("History = %d messages, want 1", len(history))
 	}
-	if history[0].Content != "earlier" {
-		t.Fatalf("History[0] = %q, want %q", history[0].Content, "earlier")
+	text, ok := fantasy.AsMessagePart[fantasy.TextPart](history[0].Content[0])
+	if !ok || text.Text != "earlier" {
+		t.Fatalf("History[0] = %+v, want the message text", history[0])
 	}
 }
 
 func TestAskRecordsReportedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		reasoning, err := json.Marshal(map[string]any{
-			"choices": []any{map[string]any{"delta": map[string]any{"reasoning_content": "hmm"}}},
+		streamHeaders(w)
+		writeReasoningDelta(t, w, "hmm")
+		writeTextDelta(t, w, "hi")
+		writeFinish(t, w, "stop", map[string]any{
+			"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105,
 		})
-		if err != nil {
-			t.Errorf("encode reasoning: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", reasoning)
-		content, err := json.Marshal(map[string]any{
-			"choices": []any{map[string]any{"delta": map[string]any{"content": "hi"}}},
-		})
-		if err != nil {
-			t.Errorf("encode content: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", content)
-		usage, err := json.Marshal(map[string]any{
-			"choices": []any{},
-			"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105},
-		})
-		if err != nil {
-			t.Errorf("encode usage: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", usage)
-		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	var thinking bytes.Buffer
-	ag := New(client, shell.Runner{}, "", 3, io.Discard, &thinking, nil)
+	ag := newTestAgent(t, server, shell.Runner{}, "", io.Discard, &thinking, nil)
 	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -187,30 +243,21 @@ func TestAskSeparatesSections(t *testing.T) {
 	turns := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		turns++
-		w.Header().Set("Content-Type", "text/event-stream")
+		streamHeaders(w)
 		if turns == 1 {
-			writeDelta(t, w, map[string]any{"reasoning_content": "thinking one"})
-			writeDelta(t, w, map[string]any{"tool_calls": []any{map[string]any{
-				"index": 0,
-				"id":    "call_1",
-				"type":  "function",
-				"function": map[string]any{
-					"name":      shellToolName,
-					"arguments": `{"cmd":"printf 'hi there'"}`,
-				},
-			}}})
+			writeReasoningDelta(t, w, "thinking one")
+			writeToolCall(t, w, "printf 'hi there'")
 		} else {
-			writeDelta(t, w, map[string]any{"reasoning_content": "thinking two"})
-			writeDelta(t, w, map[string]any{"content": "answer"})
+			writeReasoningDelta(t, w, "thinking two")
+			writeTextDelta(t, w, "answer")
+			writeFinish(t, w, "stop", nil)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
 
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
-	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	var answer, thinking, notices bytes.Buffer
-	ag := New(client, runner, "", 5, &answer, &thinking, &notices)
+	ag := newTestAgent(t, server, runner, "", &answer, &thinking, &notices)
 	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -232,28 +279,19 @@ func TestAskShowsCommandOutput(t *testing.T) {
 	turns := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		turns++
-		w.Header().Set("Content-Type", "text/event-stream")
+		streamHeaders(w)
 		if turns == 1 {
-			writeDelta(t, w, map[string]any{"tool_calls": []any{map[string]any{
-				"index": 0,
-				"id":    "call_1",
-				"type":  "function",
-				"function": map[string]any{
-					"name":      shellToolName,
-					"arguments": `{"cmd":"printf hello; exit 3"}`,
-				},
-			}}})
+			writeToolCall(t, w, "printf hello; exit 3")
 		} else {
-			writeDelta(t, w, map[string]any{"content": "done"})
+			writeTextDelta(t, w, "done")
+			writeFinish(t, w, "stop", nil)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
 
 	runner := shell.Runner{Shell: "/bin/sh", Dir: t.TempDir(), Timeout: 5 * time.Second, MaxOutputBytes: 4096}
-	client := llm.New(server.URL, "key", "model", nil, server.Client())
 	var answer, thinking, notices bytes.Buffer
-	ag := New(client, runner, "", 5, &answer, &thinking, &notices)
+	ag := newTestAgent(t, server, runner, "", &answer, &thinking, &notices)
 	if _, err := ag.Ask(context.Background(), "say hi"); err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -268,47 +306,43 @@ func TestAskShowsCommandOutput(t *testing.T) {
 	}
 }
 
-// writeDelta streams one delta to the endpoint's response.
-func writeDelta(t *testing.T, w http.ResponseWriter, delta map[string]any) {
-	t.Helper()
-	event, err := json.Marshal(map[string]any{
-		"choices": []any{map[string]any{"delta": delta}},
-	})
-	if err != nil {
-		t.Errorf("encode delta: %v", err)
-	}
-	fmt.Fprintf(w, "data: %s\n\n", event)
-}
-
 func TestEstimateTokens(t *testing.T) {
 	t.Parallel()
-	messages := []llm.Message{{
-		Role:             llm.RoleAssistant,
-		Content:          strings.Repeat("a", 4),
-		ReasoningContent: strings.Repeat("b", 4),
+	messages := []fantasy.Message{{
+		Role: fantasy.MessageRoleAssistant,
+		Content: []fantasy.MessagePart{
+			fantasy.TextPart{Text: strings.Repeat("a", 4)},
+			fantasy.ReasoningPart{Text: strings.Repeat("b", 4)},
+		},
 	}}
 	if got := estimateTokens(messages); got != 2 {
 		t.Fatalf("estimateTokens = %d, want 2", got)
 	}
 }
 
-func TestNewOmitsEmptySystemPrompt(t *testing.T) {
+func TestAskRejectsEmptyInput(t *testing.T) {
 	t.Parallel()
-	ag := New(nil, shell.Runner{}, "   ", 3, nil, nil, nil)
-	if len(ag.history) != 0 {
-		t.Fatalf("history = %d messages, want none", len(ag.history))
-	}
-	ag.Restore([]llm.Message{{Role: llm.RoleUser, Content: "earlier"}})
-	if len(ag.history) != 1 || ag.history[0].Role != llm.RoleUser {
-		t.Fatalf("restored history = %+v, want one user message", ag.history)
+	ag := New(Config{MaxTurns: 3})
+	if _, err := ag.Ask(context.Background(), "   "); err == nil {
+		t.Fatal("Ask accepted empty input")
 	}
 }
 
-func TestAskRejectsEmptyInput(t *testing.T) {
-	t.Parallel()
-	ag := New(nil, shell.Runner{}, "", 3, nil, nil, nil)
-	if _, err := ag.Ask(context.Background(), "   "); err == nil {
-		t.Fatal("Ask accepted empty input")
+func TestToolDescriptionAbbreviatesHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := filepath.Join(home, "SomeDir")
+	ag := New(Config{Runner: shell.Runner{Shell: "/bin/sh", Dir: dir}, MaxTurns: 3})
+	got := ag.toolDescription()
+	if !strings.Contains(got, "`~/SomeDir`") {
+		t.Fatalf("description = %q, want the abbreviated working directory", got)
+	}
+	if strings.Contains(got, home) {
+		t.Fatalf("description = %q, want no absolute home path", got)
+	}
+	if !strings.Contains(got, "`/bin/sh -c`") {
+		t.Fatalf("description = %q, want the named interpreter", got)
 	}
 }
 
@@ -333,31 +367,5 @@ func TestAbbreviateHome(t *testing.T) {
 				t.Fatalf("abbreviateHome(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestParametersAbbreviatesHomeDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	dir := filepath.Join(home, "SomeDir")
-	ag := New(nil, shell.Runner{Shell: "/bin/sh", Dir: dir}, "", 3, nil, nil, nil)
-
-	var schema struct {
-		Properties struct {
-			Cmd struct {
-				Description string `json:"description"`
-			} `json:"cmd"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(ag.parameters(), &schema); err != nil {
-		t.Fatalf("unmarshal parameters: %v", err)
-	}
-	got := schema.Properties.Cmd.Description
-	if !strings.Contains(got, "`~/SomeDir`") {
-		t.Fatalf("description = %q, want the abbreviated working directory", got)
-	}
-	if strings.Contains(got, home) {
-		t.Fatalf("description = %q, want no absolute home path", got)
 	}
 }

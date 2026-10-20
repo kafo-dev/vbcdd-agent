@@ -1,6 +1,6 @@
 # vbcdd-agent
 
-A terminal agent that answers by running shell commands. It talks to an OpenAI-compatible chat-completions endpoint, advertises one tool, and saves every conversation as JSON Lines.
+A terminal agent that answers by running shell commands. It talks to an OpenAI-compatible chat-completions endpoint through the [Charm Fantasy SDK](https://github.com/charmbracelet/fantasy), advertises one tool, and saves every conversation as JSON Lines.
 
 > **Warning: Large Language Model-Generated Code**
 >
@@ -14,6 +14,16 @@ internal/agent/agent.go
 [exit code 0]
 The last commit touched the entry point and the tool loop.
 ```
+
+## How it works
+
+The Fantasy SDK owns the request to the endpoint, the response stream, the tool loop, and the retries. This program owns the rest:
+
+- One shell tool, the only tool the model may call. The SDK generates its argument schema from a Go struct.
+- The section formatting of the streamed output, so the reasoning, each command, what it prints, and the answer stay apart.
+- The conversation, saved as JSON Lines and loaded back on the next run.
+
+The endpoint is the SDK's OpenAI-compatible provider, so any server that speaks the chat-completions protocol works.
 
 ## Build
 
@@ -78,9 +88,9 @@ max_output_bytes = 65536
 "X-Api-Key" = "..."
 ```
 
-A header in `[headers]` overrides the `Authorization`, `Content-Type`, and `Accept` header the client would set. A provider that authenticates under its own name therefore works with its name in `[headers]` and an empty `api_key`.
+A header in `[headers]` joins every request, so a provider that authenticates under its own name works with its name in `[headers]` and an empty `api_key`.
 
-A reasoning model streams its chain of thought before its answer. The program writes those fragments to standard error as they arrive, keeping standard output for the answer alone. Each command and the output it prints join the reasoning there, each on its own line. It keeps that reasoning in the conversation and sends it back on later turns, as the protocol requires once tools are in play.
+A reasoning model streams its chain of thought before its answer. The program writes those fragments to standard error as they arrive, keeping standard output for the answer alone. Each command and the output it prints join the reasoning there, each on its own line. The SDK keeps that reasoning in the conversation and sends it back on later turns, as the protocol requires once tools are in play.
 
 Each environment variable overrides the file:
 

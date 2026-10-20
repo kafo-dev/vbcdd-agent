@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"vbcdd.kafo.dev/agent/internal/llm"
+	"charm.land/fantasy"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -15,13 +15,18 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	sent := []llm.Message{
-		{Role: llm.RoleSystem, Content: "dropped"},
-		{Role: llm.RoleUser, Content: "list the files"},
-		{Role: llm.RoleAssistant, Content: "", ToolCalls: []llm.ToolCall{{
-			ID: "call_1", Type: "function", Function: llm.FunctionCall{Name: "shell", Arguments: `{"command":"ls"}`},
-		}}},
-		{Role: llm.RoleTool, ToolCallID: "call_1", Content: "main.go"},
+	sent := []fantasy.Message{
+		fantasy.NewSystemMessage("dropped"),
+		fantasy.NewUserMessage("list the files"),
+		{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{
+			fantasy.ToolCallPart{ToolCallID: "call_1", ToolName: "shell", Input: `{"cmd":"ls"}`},
+		}},
+		{Role: fantasy.MessageRoleTool, Content: []fantasy.MessagePart{
+			fantasy.ToolResultPart{
+				ToolCallID: "call_1",
+				Output:     fantasy.ToolResultOutputContentText{Text: "main.go"},
+			},
+		}},
 	}
 	for _, message := range sent {
 		if err = writer.Append(message); err != nil {
@@ -42,15 +47,36 @@ func TestRoundTrip(t *testing.T) {
 	if len(messages) != 3 {
 		t.Fatalf("messages = %d, want 3 (the system prompt stays out)", len(messages))
 	}
-	if messages[0].Content != "list the files" {
-		t.Fatalf("first message = %q", messages[0].Content)
+	if text := messageText(t, messages[0]); text != "list the files" {
+		t.Fatalf("first message = %q", text)
 	}
-	if len(messages[1].ToolCalls) != 1 {
-		t.Fatalf("tool calls = %d, want 1", len(messages[1].ToolCalls))
+	call, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](messages[1].Content[0])
+	if !ok {
+		t.Fatalf("second message part = %T, want a tool call", messages[1].Content[0])
 	}
-	if messages[2].ToolCallID != "call_1" {
-		t.Fatalf("tool call id = %q, want %q", messages[2].ToolCallID, "call_1")
+	if call.ToolName != "shell" {
+		t.Fatalf("tool name = %q, want %q", call.ToolName, "shell")
 	}
+	result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](messages[2].Content[0])
+	if !ok {
+		t.Fatalf("third message part = %T, want a tool result", messages[2].Content[0])
+	}
+	if result.ToolCallID != "call_1" {
+		t.Fatalf("tool call id = %q, want %q", result.ToolCallID, "call_1")
+	}
+}
+
+// messageText returns the text of a message's first text part.
+func messageText(t *testing.T, message fantasy.Message) string {
+	t.Helper()
+	if len(message.Content) == 0 {
+		t.Fatal("message has no content")
+	}
+	text, ok := fantasy.AsMessagePart[fantasy.TextPart](message.Content[0])
+	if !ok {
+		t.Fatalf("part = %T, want text", message.Content[0])
+	}
+	return text.Text
 }
 
 func TestLatestPicksNewest(t *testing.T) {
